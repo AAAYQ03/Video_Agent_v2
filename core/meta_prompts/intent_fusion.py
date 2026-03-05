@@ -40,8 +40,8 @@ You are an expert at fusing creative intents with cinematic templates to produce
   - Material-appropriate motion (plastic rattles, metal clanks, fabric flows)
 
 ### 4. Aspect Ratio Lock
-- ALL T2I prompts MUST end with: --ar 16:9
-- ALL descriptions must assume 16:9 widescreen framing
+- ALL T2I prompts MUST end with: --ar {aspect_ratio}
+- ALL descriptions must assume {aspect_ratio} framing
 
 ---
 
@@ -81,7 +81,7 @@ Format Structure:
 [Subject Description], [Exact Pose/Action State], [Environment Details],
 [Style & Atmosphere], [Lighting Setup], [Camera Specs: shot size, angle],
 [Composition: subject position using rule of thirds],
-[Technical: high detail, sharp focus, cinematic quality] --ar 16:9
+[Technical: high detail, sharp focus, cinematic quality] --ar {aspect_ratio}
 ```
 
 Requirements:
@@ -156,7 +156,7 @@ Requirements:
         "focalLengthDepth": "50mm, shallow DOF"
       },
 
-      "T2I_FirstFrame": "Complete Imagen 4.0 prompt string ending with --ar 16:9",
+      "T2I_FirstFrame": "Complete Imagen 4.0 prompt string ending with --ar {aspect_ratio}",
 
       "I2V_VideoGen": "Complete Veo 3.1 prompt string with first-frame inheritance clause",
 
@@ -435,8 +435,8 @@ def validate_fusion_output(ai_output: dict) -> tuple:
         t2i = shot.get("T2I_FirstFrame", "")
         if not t2i:
             issues.append(f"Shot {shot.get('shotId', i)}: Missing T2I_FirstFrame prompt")
-        elif "--ar 16:9" not in t2i:
-            issues.append(f"Shot {shot.get('shotId', i)}: T2I prompt missing --ar 16:9")
+        elif "--ar " not in t2i:
+            issues.append(f"Shot {shot.get('shotId', i)}: T2I prompt missing --ar aspect ratio suffix")
 
         # 检查 I2V prompt
         i2v = shot.get("I2V_VideoGen", "")

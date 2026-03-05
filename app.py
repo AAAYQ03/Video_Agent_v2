@@ -521,6 +521,12 @@ async def get_storyboard_socialsaver(job_id: str):
                     except:
                         pass
 
+                # 🎬 检测视频宽高比，存入 workflow global
+                from core.utils import detect_aspect_ratio
+                detected_ar = detect_aspect_ratio(video_path)
+                workflow.setdefault("global", {})["aspect_ratio"] = detected_ar
+                print(f"📐 Detected aspect ratio: {detected_ar}")
+
                 # 解析时间戳（Film IR 使用 startTime/endTime 字符串格式）
                 def parse_film_ir_time(time_str):
                     """解析 Film IR 时间格式 (HH:MM:SS.mmm 或 MM:SS.mmm 或数字)"""
@@ -1281,6 +1287,10 @@ async def use_original(job_id: str):
         "environments": env_anchors
     }
 
+    # 检测视频宽高比
+    from core.utils import detect_aspect_ratio as _detect_ar
+    _ar = _detect_ar(job_dir / "input.mp4")
+
     # Convert each concrete shot to RemixedShot format
     remixed_shots = []
     for shot in concrete_shots:
@@ -1293,7 +1303,7 @@ async def use_original(job_id: str):
         first_frame = shot.get("firstFrameDescription", "")
         if not first_frame:
             first_frame = f"{subject}. {scene}"
-        t2i = f"{first_frame} --ar 16:9"
+        t2i = f"{first_frame} --ar {_ar}"
 
         # I2V_VideoGen: compose from camera movement + subject + dynamics
         camera_movement = camera.get("cameraMovement", "Static")
@@ -1382,7 +1392,8 @@ def generate_storyboard_frame(
     identity_anchors: dict,
     visual_style: dict,
     watermark_info: dict = None,
-    is_replication: bool = False
+    is_replication: bool = False,
+    aspect_ratio: str = "16:9"
 ) -> str:
     """
     使用 Gemini 生成分镜首帧图片（基于原始帧进行编辑，保持构图一致性）
@@ -1424,6 +1435,10 @@ def generate_storyboard_frame(
         else:
             print(f"   📋 [ENDCARD] {shot_id}: end card but no original frame found")
             return ""
+
+    # 🎯 将 T2I prompt 中的 --ar 后缀替换为实际宽高比
+    import re as _re
+    t2i_prompt = _re.sub(r'--ar\s+\S+', f'--ar {aspect_ratio}', t2i_prompt)
 
     # 🎯 查找原始帧作为参考（保持构图一致性的关键）
     original_frame_path = job_dir / "frames" / f"{shot_id}.png"
@@ -1824,7 +1839,7 @@ def generate_storyboard_frame(
                     config=types.GenerateContentConfig(
                         response_modalities=['TEXT', 'IMAGE'],
                         image_config=types.ImageConfig(
-                            aspect_ratio="16:9",
+                            aspect_ratio=aspect_ratio,
                         ),
                     ),
                 )
@@ -1932,7 +1947,7 @@ def generate_storyboard_frame(
                     config=types.GenerateContentConfig(
                         response_modalities=['TEXT', 'IMAGE'],
                         image_config=types.ImageConfig(
-                            aspect_ratio="16:9",
+                            aspect_ratio=aspect_ratio,
                         ),
                     ),
                 )
@@ -2018,6 +2033,10 @@ async def generate_remix_storyboard(job_id: str, background_tasks: BackgroundTas
     job_dir = Path("jobs") / job_id
     if not job_dir.exists():
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    # 检测视频宽高比
+    from core.utils import detect_aspect_ratio as _detect_ar
+    _storyboard_ar = _detect_ar(job_dir / "input.mp4")
 
     ir_manager = FilmIRManager(job_id)
 
@@ -2114,7 +2133,8 @@ async def generate_remix_storyboard(job_id: str, background_tasks: BackgroundTas
                     identity_anchors=identity_anchors,
                     visual_style=visual_style,
                     watermark_info=shot_watermark_info,
-                    is_replication=is_replication
+                    is_replication=is_replication,
+                    aspect_ratio=_storyboard_ar
                 )
 
             # 如果生成失败，回退到原始帧
@@ -2247,7 +2267,8 @@ async def generate_remix_storyboard(job_id: str, background_tasks: BackgroundTas
                 applied_anchors={"characters": [], "environments": []},
                 identity_anchors={},
                 visual_style=visual_style,
-                watermark_info=shot.get("watermarkInfo")
+                watermark_info=shot.get("watermarkInfo"),
+                aspect_ratio=_storyboard_ar
             )
 
             # 如果生成失败，回退到原始帧
@@ -2581,6 +2602,10 @@ async def regenerate_storyboard_frames(job_id: str, request: RegenerateFramesReq
     if not job_dir.exists():
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
+    # 检测视频宽高比
+    from core.utils import detect_aspect_ratio as _detect_ar
+    _regen_ar = _detect_ar(job_dir / "input.mp4")
+
     ir_manager = FilmIRManager(job_id)
 
     # 获取 visual style 配置
@@ -2616,7 +2641,8 @@ async def regenerate_storyboard_frames(job_id: str, request: RegenerateFramesReq
             t2i_prompt=t2i_prompt,
             applied_anchors=applied_anchors,
             identity_anchors=identity_anchors,
-            visual_style=visual_style
+            visual_style=visual_style,
+            aspect_ratio=_regen_ar
         )
 
         # 如果生成失败，回退到原始帧

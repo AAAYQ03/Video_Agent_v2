@@ -12,7 +12,7 @@ from typing import Dict, List, Any, Optional, Union
 from core.workflow_io import load_workflow, save_workflow
 from core.changes import apply_global_style, replace_entity_reference
 from core.runner import run_pipeline, run_stylize, run_video_generate
-from core.utils import get_ffmpeg_path
+from core.utils import get_ffmpeg_path, detect_aspect_ratio
 
 # Film IR 集成
 from core.film_ir_schema import create_empty_film_ir
@@ -136,7 +136,11 @@ class WorkflowManager:
             "job_id": new_id,
             "source_video": "input.mp4",
             "film_ir_path": "film_ir.json",  # 🎬 Film IR 关联
-            "global": {"style_prompt": "Cinematic Realistic", "video_model": "seedance"},
+            "global": {
+                "style_prompt": "Cinematic Realistic",
+                "video_model": "seedance",
+                "aspect_ratio": detect_aspect_ratio(self.job_dir / "input.mp4"),
+            },
             "global_stages": {
                 "analyze": "SUCCESS", "extract": "SUCCESS",
                 "stylize": "NOT_STARTED", "video_gen": "NOT_STARTED", "merge": "NOT_STARTED"
@@ -235,7 +239,11 @@ class WorkflowManager:
             "job_id": self.job_id,
             "source_video": "input.mp4",
             "film_ir_path": "film_ir.json",
-            "global": {"style_prompt": "Cinematic Realistic", "video_model": "seedance"},
+            "global": {
+                "style_prompt": "Cinematic Realistic",
+                "video_model": "seedance",
+                "aspect_ratio": detect_aspect_ratio(self.job_dir / "input.mp4"),
+            },
             "global_stages": {
                 "analyze": "SUCCESS", "extract": "SUCCESS",
                 "stylize": "NOT_STARTED", "video_gen": "NOT_STARTED", "merge": "NOT_STARTED"

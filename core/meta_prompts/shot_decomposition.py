@@ -942,12 +942,15 @@ def _enforce_branding_classification(shots: List[Dict[str, Any]]) -> None:
             shot["isNarrative"] = shot["contentClass"] in ("NARRATIVE", "OVERLAY_CONTENT")
 
     # --- Phase C: fill missing visualPersistence defaults ---
+    # BRAND_SPLASH / ENDCARD 强制 PURE_STATIC（无论 Gemini 返回什么）
     for shot in shots:
-        if not shot.get("visualPersistence"):
-            if shot.get("contentClass") in ("BRAND_SPLASH", "ENDCARD"):
-                shot["visualPersistence"] = "PURE_STATIC"
-            else:
-                shot["visualPersistence"] = "NATIVE_VIDEO"
+        if shot.get("contentClass") in ("BRAND_SPLASH", "ENDCARD"):
+            if shot.get("visualPersistence") != "PURE_STATIC":
+                shot_id = shot.get("shotId", "??")
+                print(f"🏷️ [Post-process] {shot_id}: {shot.get('contentClass')} forced → PURE_STATIC (was {shot.get('visualPersistence', 'unset')})")
+            shot["visualPersistence"] = "PURE_STATIC"
+        elif not shot.get("visualPersistence"):
+            shot["visualPersistence"] = "NATIVE_VIDEO"
 
     # --- Phase D: force PURE_STATIC for decorative transition shots ---
     _TRANSITION_KEYWORDS = [

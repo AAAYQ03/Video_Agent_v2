@@ -280,6 +280,7 @@ def ai_stylize_frame(job_dir: Path, wf: dict, shot: dict) -> str:
     if dst.exists(): os.remove(dst)
 
     global_style = wf.get("global", {}).get("style_prompt", "Cinematic")
+    ar = wf.get("global", {}).get("aspect_ratio", "16:9")
 
     # 🎬 获取有效数据（优先使用 Remix 数据）
     description, cinema = get_effective_shot_data(job_dir, wf, shot)
@@ -309,7 +310,7 @@ def ai_stylize_frame(job_dir: Path, wf: dict, shot: dict) -> str:
 
     # 2️⃣ Subject Position in Frame
     if subject_position:
-        cinema_constraints.append(f"📍 FRAME POSITION: Subject MUST be positioned at {subject_position} of the 16:9 frame")
+        cinema_constraints.append(f"📍 FRAME POSITION: Subject MUST be positioned at {subject_position} of the {ar} frame")
 
     # 3️⃣ Orientation & Facing
     if subject_orientation:
@@ -358,7 +359,7 @@ def ai_stylize_frame(job_dir: Path, wf: dict, shot: dict) -> str:
 Create a {global_style} layout with intentional design elements.
 Subject: {description}.
 Style: {global_style} - Apply graphic design aesthetics as requested.
-Format: 16:9 aspect ratio with artistic layout elements.{cinematography_block}"""
+Format: {ar} aspect ratio with artistic layout elements.{cinematography_block}"""
     else:
         # 🎬 DEFAULT: Full-bleed cinematic film still using structured prompt format
         # Format: [Subject], [Action/Pose], [Environment], [Style & Atmosphere], [Lighting & Color], [Camera & Tech Specs]
@@ -369,7 +370,7 @@ Format: 16:9 aspect ratio with artistic layout elements.{cinematography_block}""
         # Build structured prompt components
         subject_block = f"[SUBJECT]: {description}"
         action_block = f"[ACTION/POSE]: {action_pose}, captured mid-motion with dynamic energy"
-        environment_block = "[ENVIRONMENT]: Immersive scene environment extending to all edges of the 16:9 frame, rich background details"
+        environment_block = f"[ENVIRONMENT]: Immersive scene environment extending to all edges of the {ar} frame, rich background details"
         style_block = f"[STYLE & ATMOSPHERE]: {global_style} aesthetic, visually striking, enhanced visual impact with refined details and textures"
         lighting_block = "[LIGHTING & COLOR]: Dramatic cinematic lighting, rich color grading, depth through light and shadow layers, volumetric atmosphere"
         tech_block = "[CAMERA & TECH]: 35mm cinematic lens, 8K ultra high resolution, shallow depth of field, natural bokeh, film grain texture"
@@ -385,7 +386,7 @@ Format: 16:9 aspect ratio with artistic layout elements.{cinematography_block}""
 {cinematography_block}
 
 COMPOSITION RULES:
-- Full-bleed edge-to-edge rendering filling 100% of the 16:9 canvas
+- Full-bleed edge-to-edge rendering filling 100% of the {ar} canvas
 - ZERO borders, margins, or white space - render as if captured from cinema camera sensor
 - Subject photographed as cinematic scene, NOT shrunk into centered box
 - Professional cinematography with rule of thirds and depth of field
@@ -404,7 +405,7 @@ FORBIDDEN:
 - Any graphic design elements unless explicitly in style prompt
 - Any text, social media UI, usernames, timestamps, or overlay graphics
 
---ar 16:9"""
+--ar {ar}"""
 
     print(f"🎨 AI 正在生成定妆图: {shot['shot_id']}")
 
@@ -416,7 +417,7 @@ FORBIDDEN:
             prompt=prompt,
             config=types.GenerateImagesConfig(
                 number_of_images=1,
-                aspect_ratio="16:9"
+                aspect_ratio=ar
             )
         )
         if response.generated_images:
@@ -619,6 +620,7 @@ high motion quality, cinematic, professional cinematography"""
     for attempt in range(max_retries):
         try:
             # image 作为独立参数传递，不在 config 内
+            veo_ar = wf.get("global", {}).get("aspect_ratio", "16:9")
             operation = client.models.generate_videos(
                 model="veo-3.1-generate-preview",
                 prompt=prompt,
@@ -627,7 +629,7 @@ high motion quality, cinematic, professional cinematography"""
                     mime_type="image/png"
                 ),
                 config=types.GenerateVideosConfig(
-                    aspect_ratio="16:9"
+                    aspect_ratio=veo_ar
                 )
             )
 
@@ -874,9 +876,10 @@ def seedance_generate_video(job_dir: Path, wf: dict, shot: dict, visual_persiste
         seedance_duration = "12"
 
     # 🎬 Step 1: 构建请求参数（严格按照 seedanceapi.org 文档）
+    seedance_ar = wf.get("global", {}).get("aspect_ratio", "16:9")
     generate_payload = {
         "prompt": prompt,
-        "aspect_ratio": "16:9",
+        "aspect_ratio": seedance_ar,
         "resolution": "720p",
         "duration": seedance_duration,
         "generate_audio": enable_audio  # 启用 AI 音频生成

@@ -1,6 +1,8 @@
 # core/utils.py
 import os
 import shutil
+import subprocess
+from pathlib import Path
 
 def get_ffmpeg_path() -> str:
     """
@@ -24,6 +26,41 @@ def get_ffmpeg_path() -> str:
         return intel_mac_path
 
     raise RuntimeError("ffmpeg not found. Please install ffmpeg.")
+
+
+def detect_aspect_ratio(video_path) -> str:
+    """
+    用 ffprobe 检测视频宽高比，返回 API 可用的字符串。
+    竖屏 → "9:16"，横屏 → "16:9"，方形 → "1:1"
+    """
+    video_path = Path(video_path)
+    if not video_path.exists():
+        return "16:9"
+
+    ffmpeg_path = get_ffmpeg_path()
+    ffprobe_path = ffmpeg_path.replace("ffmpeg", "ffprobe") if "ffmpeg" in ffmpeg_path else "ffprobe"
+
+    try:
+        result = subprocess.run(
+            [ffprobe_path, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0",
+             str(video_path)],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return "16:9"
+
+        parts = result.stdout.strip().split(",")
+        w, h = int(parts[0]), int(parts[1])
+    except Exception:
+        return "16:9"
+
+    if h > w:
+        return "9:16"
+    elif abs(w - h) / max(w, h) < 0.10:
+        return "1:1"
+    else:
+        return "16:9"
 
 
 # ── API Key Pool: 429 自动切换 ──────────────────────────────

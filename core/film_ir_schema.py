@@ -624,7 +624,7 @@ class RemixedShot(TypedDict):
 
     cameraPreserved: ShotCinematography  # 保留的摄影骨架
 
-    T2I_FirstFrame: str  # Imagen 4.0 首帧生成 prompt (以 --ar 16:9 结尾)
+    T2I_FirstFrame: str  # Imagen 4.0 首帧生成 prompt (以 --ar {aspect_ratio} 结尾)
     I2V_VideoGen: str  # Veo 3.1 视频生成 prompt (包含首帧继承条款)
 
     remixNotes: str  # 改动说明

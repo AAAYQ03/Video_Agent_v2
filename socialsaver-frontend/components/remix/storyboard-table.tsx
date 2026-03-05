@@ -131,12 +131,12 @@ export function StoryboardTable({ data, title = "Storyboard Breakdown", showSave
                     <td className="text-foreground font-medium p-3 align-top">{shot.shotNumber}</td>
                     {/* Frame Image - Larger preview */}
                     <td className="p-2 align-top">
-                      <div className="w-36 h-24 bg-secondary rounded flex items-center justify-center text-xs text-muted-foreground overflow-hidden">
+                      <div className="w-36 bg-secondary rounded flex items-center justify-center text-xs text-muted-foreground overflow-hidden">
                         {shot.firstFrameImage ? (
                           <img
                             src={shot.firstFrameImage.startsWith("http") ? shot.firstFrameImage : `${API_BASE_URL}${shot.firstFrameImage}`}
                             alt={`Shot ${shot.shotNumber}`}
-                            className="w-full h-full object-cover rounded"
+                            className="w-full h-auto object-contain rounded"
                             onError={(e) => {
                               (e.target as HTMLImageElement).style.display = 'none'
                             }}

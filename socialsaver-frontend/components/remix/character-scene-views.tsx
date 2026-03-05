@@ -1224,12 +1224,12 @@ function CharacterCard({
           {/* Left Column: ORIGINAL SHOT */}
           <div className="flex-shrink-0">
             <p className="text-xs text-muted-foreground mb-2 font-medium">ORIGINAL SHOT</p>
-            <div className="relative w-40 h-28 bg-secondary rounded-lg overflow-hidden">
+            <div className="relative w-40 bg-secondary rounded-lg overflow-hidden">
               {originalShotImage ? (
                 <img
                   src={originalShotImage}
                   alt={`Original shot of ${character.name}`}
-                  className="w-full h-full object-cover"
+                  className="w-full h-auto object-contain"
                   onError={(e) => { (e.currentTarget.parentElement as HTMLElement).innerHTML = '<div class="w-full h-full flex items-center justify-center text-muted-foreground"><svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></div>' }}
                 />
               ) : (
@@ -1464,12 +1464,12 @@ function SceneCard({
           {/* Left Column: ORIGINAL SHOT */}
           <div className="flex-shrink-0">
             <p className="text-xs text-muted-foreground mb-2 font-medium">ORIGINAL SHOT</p>
-            <div className="relative w-40 h-28 bg-secondary rounded-lg overflow-hidden">
+            <div className="relative w-40 bg-secondary rounded-lg overflow-hidden">
               {originalShotImage ? (
                 <img
                   src={originalShotImage}
                   alt={`Original shot of ${scene.name}`}
-                  className="w-full h-full object-cover"
+                  className="w-full h-auto object-contain"
                   onError={(e) => { (e.currentTarget.parentElement as HTMLElement).innerHTML = '<div class="w-full h-full flex items-center justify-center text-muted-foreground"><svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></div>' }}
                 />
               ) : (

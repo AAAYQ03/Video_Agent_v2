@@ -1809,8 +1809,14 @@ class FilmIRManager:
 
         client = genai.Client(api_key=api_key)
 
+        # 检测视频宽高比
+        from .utils import detect_aspect_ratio
+        _ar = detect_aspect_ratio(self.job_dir / "input.mp4")
+
         # 构建 Prompt
         prompt = INTENT_FUSION_PROMPT.replace(
+            "{aspect_ratio}", _ar
+        ).replace(
             "{parsed_intent}",
             json.dumps(parsed_intent, ensure_ascii=False, indent=2)
         ).replace(
@@ -2085,9 +2091,12 @@ Output ONLY valid JSON. No markdown, no explanation.
         """
         分批生成 Shot Prompts (T2I + I2V)
         """
-        from .utils import gemini_keys
+        from .utils import gemini_keys, detect_aspect_ratio
         api_key = gemini_keys.get()
         client = genai.Client(api_key=api_key)
+
+        # 检测视频宽高比
+        aspect_ratio = detect_aspect_ratio(self.job_dir / "input.mp4")
 
         # 构建镜头信息
         shots_info = []
@@ -2145,7 +2154,7 @@ The new remixed subject MUST FIT the original camera framing. If original is CLO
       "cameraMovement": "EXACTLY from original - NEVER modify",
       "focalLengthDepth": "EXACTLY from original - NEVER modify"
     }},
-    "T2I_FirstFrame": "[Subject from Identity Anchor detailedDescription], [pose matching original], [environment], [style], [lighting], [EXACT camera specs from cameraPreserved], high detail, cinematic --ar 16:9",
+    "T2I_FirstFrame": "[Subject from Identity Anchor detailedDescription], [pose matching original], [environment], [style], [lighting], [EXACT camera specs from cameraPreserved], high detail, cinematic --ar {aspect_ratio}",
     "I2V_VideoGen": "[EXACT camera movement from cameraPreserved], [action], [physics details], maintaining exact composition and lighting from the first frame, cinematic, [duration]s",
     "remixNotes": "Brief change description",
     "appliedAnchors": {{"characters": ["char_01"], "environments": ["env_01"]}}
@@ -2153,7 +2162,7 @@ The new remixed subject MUST FIT the original camera framing. If original is CLO
 ]
 
 ## CRITICAL RULES:
-1. T2I prompt MUST end with --ar 16:9
+1. T2I prompt MUST end with --ar {aspect_ratio}
 2. I2V prompt MUST include "maintaining exact composition and lighting from the first frame"
 3. **cameraPreserved MUST COPY EXACTLY from the original shot's camera field** - DO NOT INVENT NEW VALUES
 4. T2I prompt MUST include the camera's shotSize (e.g., "medium shot", "close-up", "wide shot")
