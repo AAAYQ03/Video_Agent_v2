@@ -461,6 +461,7 @@ def ffmpeg_static_video(job_dir: Path, shot: dict, duration: float = 4.0) -> str
         "-loop", "1",
         "-i", str(img_path),
         "-t", str(duration),
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
         "-c:v", "libx264",
         "-tune", "stillimage",
         "-pix_fmt", "yuv420p",
@@ -469,7 +470,7 @@ def ffmpeg_static_video(job_dir: Path, shot: dict, duration: float = 4.0) -> str
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg static video failed: {result.stderr[:200]}")
+        raise RuntimeError(f"ffmpeg static video failed for {shot_id} (img={img_path}): {result.stderr[-500:]}")
     return f"videos/{shot_id}.mp4"
 
 

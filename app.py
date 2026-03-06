@@ -839,6 +839,30 @@ def _run_batch_video_generation_serial(job_id: str):
                 if (job_dir / subdir / f"{shot_id}.png").exists():
                     has_frame = True
                     break
+
+            # 保底：如果没有帧，尝试从原始视频中提取
+            if not has_frame:
+                video_path = job_dir / "input.mp4"
+                start_sec = shot.get("start_time") or shot.get("startSeconds") or 0
+                end_sec = shot.get("end_time") or shot.get("endSeconds") or 0
+                extract_ts = end_sec - 0.2 if end_sec > 0 else start_sec
+                if video_path.exists() and extract_ts >= 0:
+                    try:
+                        from core.utils import get_ffmpeg_path
+                        _ff = get_ffmpeg_path()
+                        frames_dir = job_dir / "frames"
+                        frames_dir.mkdir(exist_ok=True)
+                        dst_frame = frames_dir / f"{shot_id}.png"
+                        import subprocess
+                        subprocess.run([_ff, "-y", "-ss", str(extract_ts), "-i", str(video_path),
+                                        "-frames:v", "1", "-q:v", "2", str(dst_frame)],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        if dst_frame.exists():
+                            has_frame = True
+                            print(f"📸 [Extract] {shot_id}: extracted frame at {extract_ts:.1f}s for static video")
+                    except Exception as ex:
+                        print(f"⚠️ [Extract] {shot_id}: frame extraction failed: {ex}")
+
             if has_frame:
                 # 有帧 → 用 ffmpeg 生成静态视频，保留在最终合并中
                 try:
