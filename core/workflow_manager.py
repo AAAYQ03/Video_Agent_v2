@@ -1433,13 +1433,11 @@ class WorkflowManager:
         return None
 
     def merge_videos(self) -> str:
-        """执行无损合并（跳过非叙事镜头）"""
+        """执行无损合并（包含所有生成成功的镜头，含 ENDCARD/BRAND_SPLASH 静态视频）"""
         ffmpeg_path = get_ffmpeg_path()
         success_shots = [
             s for s in self.workflow.get("shots", [])
             if s["status"].get("video_generate") == "SUCCESS"
-            and s.get("isNarrative", True)
-            and s.get("contentClass", "NARRATIVE") not in ("BRAND_SPLASH", "ENDCARD")
         ]
         if not success_shots: raise RuntimeError("没有可合并的分镜视频。")
         success_shots.sort(key=lambda x: x["shot_id"])

@@ -18,6 +18,7 @@ Unlike generic AI video generators, Video Agent v2 treats video as a **structure
 - **Three-View Character System** — Generates consistent front/side/back reference views for each character to ensure visual coherence across all shots
 - **Natural Language Storyboard Editing** — Chat with AI to modify individual shots, regenerate frames, and iterate on the storyboard
 - **Smart Watermark Handling** — Automatic watermark detection, classification, and removal via intelligent cropping
+- **Dynamic Aspect Ratio** — Automatically detects video orientation (landscape 16:9 / portrait 9:16 / square 1:1) and propagates to all generation stages
 - **Batch Processing** — Queue multiple videos for sequential analysis and generation
 
 ---
@@ -117,7 +118,7 @@ Remixed Layer     ─── User intent applied to abstract template
 
 ### Image Generation — Gemini 3 Pro Image Preview
 
-- **Character Three-Views**: Front, side, back reference images (2K resolution, 16:9 aspect)
+- **Character Three-Views**: Front, side, back reference images (2K resolution)
 - **Environment References**: Wide establishing shot, detail view, alternate angle
 - **Product Three-Views**: E-commerce product reference images from multiple angles
 - **Storyboard Frame Generation**: Per-shot first frames with identity-consistent characters and environments
@@ -144,7 +145,7 @@ Remixed Layer     ─── User intent applied to abstract template
 - **Smart Watermark Cropping**: Directional crop + upscale for edge watermarks
 - **Video Segment Splitting**: Per-shot source segments
 - **Final Merge**: Concatenate all shot videos with audio sync
-- **Metadata Probing**: Resolution detection, duration calculation via FFprobe
+- **Metadata Probing**: Resolution detection, duration calculation, aspect ratio detection (16:9 / 9:16 / 1:1) via FFprobe
 
 ---
 
@@ -363,8 +364,10 @@ cmd = "uvicorn app:app --host 0.0.0.0 --port $PORT"
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `GEMINI_API_KEY` | Yes | Google Gemini / Veo / Imagen API access |
-| `SEEDANCE_API_KEY` | Optional | Seedance video generation |
+| `GEMINI_API_KEYS` | Yes | Comma-separated Gemini API keys (auto-rotating pool with 429 cooldown) |
+| `GEMINI_API_KEY` | Fallback | Single Gemini key (used if `GEMINI_API_KEYS` not set) |
+| `SEEDANCE_API_KEYS` | Optional | Comma-separated Seedance API keys (auto-rotating pool) |
+| `SEEDANCE_API_KEY` | Fallback | Single Seedance key |
 | `BASE_URL` | Production | Public URL for asset serving |
 | `PORT` | Auto-set | Server port (Railway) |
 | `NEXT_PUBLIC_API_URL` | Frontend | Backend API base URL |

@@ -829,13 +829,33 @@ def _run_batch_video_generation_serial(job_id: str):
     for idx, shot in enumerate(shots):
         shot_id = shot.get("shot_id")
 
-        # 🏷️ 跳过非叙事镜头（BRAND_SPLASH / ENDCARD）
+        # 🏷️ 非叙事镜头处理：ENDCARD/BRAND_SPLASH 走 PURE_STATIC 路径生成静态视频
         content_class = shot.get("contentClass", "NARRATIVE")
         is_narrative = shot.get("isNarrative", True)
         if not is_narrative or content_class in ("BRAND_SPLASH", "ENDCARD"):
-            print(f"⏭️ [Skip] {shot_id}: {content_class} (非叙事镜头，跳过视频生成)")
-            shot.setdefault("status", {})["video_generate"] = "SKIPPED"
-            save_workflow(job_dir, wf)
+            # 检查是否有可用的帧图片（用户上传的替换图或原始帧）
+            has_frame = False
+            for subdir in ["storyboard_frames", "stylized_frames", "frames"]:
+                if (job_dir / subdir / f"{shot_id}.png").exists():
+                    has_frame = True
+                    break
+            if has_frame:
+                # 有帧 → 用 ffmpeg 生成静态视频，保留在最终合并中
+                try:
+                    duration = shot.get("duration") or shot.get("durationSeconds") or 4.0
+                    rel_video_path = ffmpeg_static_video(job_dir, shot, duration)
+                    shot.setdefault("assets", {})["video"] = rel_video_path
+                    shot.setdefault("status", {})["video_generate"] = "SUCCESS"
+                    print(f"🖼️ [Static] {shot_id}: {content_class} → ffmpeg static video ({duration}s)")
+                    save_workflow(job_dir, wf)
+                except Exception as e:
+                    print(f"⚠️ [Static] {shot_id}: ffmpeg static failed: {e}")
+                    shot.setdefault("status", {})["video_generate"] = "SKIPPED"
+                    save_workflow(job_dir, wf)
+            else:
+                print(f"⏭️ [Skip] {shot_id}: {content_class} (无可用帧，跳过)")
+                shot.setdefault("status", {})["video_generate"] = "SKIPPED"
+                save_workflow(job_dir, wf)
             continue
 
         # 🔄 冷却间隔（第一个 shot 除外）
