@@ -1,0 +1,16 @@
+{
+  "_comment": "敏感词列表。上传的自然语言指令 / 参考源描述会被扫描；命中则拒绝或脱敏。条目按类别分组，便于后续差异化处理。",
+  "project_codenames": [
+    "PROJECT_OMEGA",
+    "SPRING_LAUNCH_2026"
+  ],
+  "internal_only_terms": [
+    "内部测试",
+    "不对外"
+  ],
+  "pii_hints": [
+    "身份证",
+    "护照号",
+    "社保号"
+  ]
+}

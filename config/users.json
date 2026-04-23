@@ -1,0 +1,18 @@
+{
+  "_comment": "用户白名单 + Bearer Token。生产环境应替换为数据库或 SSO；MVP 阶段每个用户手动发 token。admin 可导出保密素材与查看审计日志；creator 正常生产；viewer 只读。",
+  "_token_format": "sk-retake-<随机32位>；启动时校验前缀",
+  "users": [
+    {
+      "email": "admin@example.com",
+      "token": "sk-retake-REPLACE_ME_ADMIN_TOKEN_1234567890abcd",
+      "role": "admin",
+      "active": true
+    },
+    {
+      "email": "creator1@example.com",
+      "token": "sk-retake-REPLACE_ME_CREATOR_TOKEN_12345678901",
+      "role": "creator",
+      "active": true
+    }
+  ]
+}

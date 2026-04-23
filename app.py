@@ -14,8 +14,7 @@ import uuid
 import shutil
 from pathlib import Path
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 import re
@@ -26,6 +25,20 @@ from core.workflow_manager import WorkflowManager
 from core.agent_engine import AgentEngine
 from core.film_ir_manager import FilmIRManager
 from core.film_ir_io import load_film_ir, film_ir_exists
+
+# Safety 体系（Batch 1）
+from core.safety.auth import auth_middleware, require_user, require_admin
+from core.safety.audit_log import audit_log
+from core.safety.input_guard import (
+    validate_upload_file,
+    validate_material_metadata,
+    validate_prompt,
+    scan_sensitive_terms,
+    InputGuardError,
+    TAG_INTERNAL,
+    TAG_VIRAL_REF,
+)
+from core.safety.signed_url import sign_asset_url, verify_asset_url
 
 # Base URL for asset links - use environment variable in production
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
@@ -165,6 +178,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 1.5 身份验证中间件（Safety 体系底座）
+# 注意：middleware 执行顺序是后加的先执行，所以 auth 会在 CORS 之后
+app.middleware("http")(auth_middleware)
+
+
+@app.get("/api/health")
+async def health_check():
+    """健康检查（无需认证）"""
+    return {"status": "ok"}
+
+
+@app.get("/api/auth/whoami")
+async def whoami(request: Request):
+    """返回当前身份（用于前端登录后验证）"""
+    user = getattr(request.state, "user", None)
+    if user is None:
+        return {"authenticated": False}
+    return {
+        "authenticated": True,
+        "email": user.email,
+        "role": user.role,
+    }
+
 
 # 2. 初始化核心引擎
 # 创建全局 manager 实例
@@ -317,14 +354,61 @@ def _run_upload_analysis_background(job_id: str, video_path: Path):
 
 
 @app.post("/api/upload")
-async def upload_video(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+async def upload_video(
+    request: Request,
+    file: UploadFile = File(...),
+    material_tag: str = Form(...),
+    contains_confidential: bool = Form(False),
+    reference_url: Optional[str] = Form(None),
+    reference_dimensions: Optional[str] = Form(None),  # 逗号分隔的多选
+    background_tasks: BackgroundTasks = None,
+):
     """
-    异步上传模式：立即返回 job_id，后台执行分析
-    前端通过 /api/job/{job_id}/upload-status 轮询进度
+    异步上传模式：立即返回 job_id，后台执行分析。
+    前端通过 /api/job/{job_id}/upload-status 轮询进度。
+
+    Safety 要求：
+      - material_tag 必填（INTERNAL | VIRAL_REF）
+      - VIRAL_REF 必须带 reference_url 与至少 1 个 reference_dimensions
+      - contains_confidential 仅 INTERNAL 有效，勾选后 admin 才能导出
     """
-    print(f"📥 [收到文件] 正在接收上传: {file.filename}")
+    user = require_user(request)
+    print(f"📥 [收到文件] user={user.email} filename={file.filename} tag={material_tag}")
+
+    # --- 1. 输入层校验（失败即拒绝，不落盘） ---
     try:
-        # 1. 创建 job 目录
+        # 1a. 素材分级字段
+        dims = (
+            [d.strip() for d in reference_dimensions.split(",") if d.strip()]
+            if reference_dimensions
+            else []
+        )
+        metadata = validate_material_metadata(
+            material_tag,
+            contains_confidential=contains_confidential,
+            reference_url=reference_url,
+            reference_dimensions=dims,
+        )
+
+        # 1b. 文件校验（扩展名 / MIME；大小在读完之后再校）
+        size_hint = getattr(file, "size", None) or 0
+        validate_upload_file(
+            filename=file.filename or "",
+            size_bytes=size_hint,
+            content_type=file.content_type,
+        )
+    except InputGuardError as e:
+        audit_log().emit(
+            "upload",
+            user=user.email,
+            resource=file.filename,
+            outcome="denied",
+            details={"reason": e.reason, "field": e.field, "tag": material_tag},
+        )
+        raise HTTPException(status_code=400, detail={"error": e.reason, "field": e.field})
+
+    try:
+        # 2. 创建 job 目录
         new_job_id = f"job_{uuid.uuid4().hex[:8]}"
         job_dir = Path("jobs") / new_job_id
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -333,37 +417,94 @@ async def upload_video(file: UploadFile = File(...), background_tasks: Backgroun
         (job_dir / "source_segments").mkdir(exist_ok=True)
         (job_dir / "stylized_frames").mkdir(exist_ok=True)
 
-        # 2. 保存视频到 job 目录
+        # 3. 保存视频到 job 目录（写入后再次校验大小上限）
         video_path = job_dir / "input.mp4"
         with open(video_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
+        actual_size = video_path.stat().st_size
+        try:
+            validate_upload_file(
+                filename=file.filename or "",
+                size_bytes=actual_size,
+                content_type=file.content_type,
+            )
+        except InputGuardError as e:
+            # 超大文件写完才发现 → 回滚
+            shutil.rmtree(job_dir, ignore_errors=True)
+            audit_log().emit(
+                "upload",
+                user=user.email,
+                job_id=new_job_id,
+                resource=file.filename,
+                outcome="denied",
+                details={"reason": e.reason, "size_bytes": actual_size},
+            )
+            raise HTTPException(status_code=400, detail={"error": e.reason, "field": "file"})
+
+        # 4. 落地素材元数据（供后续审计、导出授权、相似度比对使用）
+        meta_payload = {
+            **metadata.to_dict(),
+            "uploaded_by": user.email,
+            "uploaded_at": datetime.now().isoformat(),
+            "original_filename": file.filename,
+            "content_type": file.content_type,
+            "size_bytes": actual_size,
+        }
+        with open(job_dir / "material_metadata.json", "w", encoding="utf-8") as f:
+            json.dump(meta_payload, f, ensure_ascii=False, indent=2)
+
         print(f"📁 [已保存] 视频已保存到: {video_path}")
 
-        # 3. 初始化状态
+        # 5. 初始化状态
         upload_analysis_tasks[new_job_id] = {
             "status": "queued",
             "stage": "upload",
             "message": "上传完成，等待分析...",
-            "queued_at": datetime.now().isoformat()
+            "queued_at": datetime.now().isoformat(),
+            "material_tag": metadata.tag,
         }
 
-        # 4. 启动后台分析
+        # 6. 启动后台分析
         background_tasks.add_task(_run_upload_analysis_background, new_job_id, video_path)
 
-        print(f"🚀 [异步模式] 已返回 job_id，分析在后台进行: {new_job_id}")
+        # 7. 审计成功事件
+        audit_log().emit(
+            "upload",
+            user=user.email,
+            job_id=new_job_id,
+            resource=str(video_path),
+            outcome="ok",
+            details={
+                "tag": metadata.tag,
+                "confidential": metadata.contains_confidential,
+                "size_bytes": actual_size,
+                "reference_url": metadata.reference_url,
+                "reference_dimensions": metadata.reference_dimensions,
+            },
+        )
 
-        # 5. 立即返回 (不等待分析完成)
+        print(f"🚀 [异步模式] 已返回 job_id: {new_job_id}")
         return {
             "status": "processing",
             "job_id": new_job_id,
-            "message": "上传成功，分析正在后台进行，请轮询状态"
+            "material_tag": metadata.tag,
+            "message": "上传成功，分析正在后台进行，请轮询状态",
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ [报错] 上传环节出错: {str(e)}")
         import traceback
         traceback.print_exc()
+        audit_log().emit(
+            "upload",
+            user=user.email,
+            resource=file.filename,
+            outcome="error",
+            details={"error": str(e)[:500]},
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -5094,8 +5235,127 @@ async def add_no_cache_header(request, call_next):
         response.headers["Expires"] = "0"
     return response
 
-# 挂载静态资源目录
-app.mount("/assets", StaticFiles(directory="jobs", check_dir=False), name="assets")
+
+# --- 带签名校验的资源访问端点（替代原 StaticFiles mount） ---
+# URL 形如：/assets/{job_id}/path/to/file.png?exp=...&u=...&sig=...
+# 不带签名或签名无效/过期/身份不匹配 → 403
+
+_JOBS_ROOT = Path("jobs").resolve()
+
+
+@app.get("/assets/{job_id}/{file_path:path}")
+async def serve_asset(
+    job_id: str,
+    file_path: str,
+    request: Request,
+    exp: Optional[str] = None,
+    u: Optional[str] = None,
+    sig: Optional[str] = None,
+):
+    """
+    受 HMAC 签名保护的资源访问。签名绑定用户 email + 过期时间。
+
+    目前签名绑定是"强绑定"——签发时的用户必须等于当前请求身份。
+    前端刷新时用当前 token 重新向 /api/asset/sign 要新链接即可。
+    """
+    user = getattr(request.state, "user", None)
+    current_email = user.email if user else None
+
+    # 1. 拒绝任何越出 jobs/ 目录的路径穿越尝试
+    target = (_JOBS_ROOT / job_id / file_path).resolve()
+    try:
+        target.relative_to(_JOBS_ROOT)
+    except ValueError:
+        audit_log().emit(
+            "asset_access",
+            user=current_email or "anonymous",
+            job_id=job_id,
+            resource=f"{job_id}/{file_path}",
+            outcome="denied",
+            details={"reason": "path_traversal"},
+        )
+        raise HTTPException(status_code=400, detail="invalid path")
+
+    # 2. 签名校验（签名参数缺失或无效一律 403）
+    if not exp or not u or not sig:
+        audit_log().emit(
+            "asset_access",
+            user=current_email or "anonymous",
+            job_id=job_id,
+            resource=f"{job_id}/{file_path}",
+            outcome="denied",
+            details={"reason": "missing_signature"},
+        )
+        raise HTTPException(status_code=403, detail="signed URL required")
+
+    try:
+        verify_asset_url(
+            job_id=job_id,
+            path=file_path,
+            exp_str=exp,
+            u_str=u,
+            sig=sig,
+            current_user_email=current_email,
+        )
+    except ValueError as e:
+        audit_log().emit(
+            "asset_access",
+            user=current_email or "anonymous",
+            job_id=job_id,
+            resource=f"{job_id}/{file_path}",
+            outcome="denied",
+            details={"reason": str(e)},
+        )
+        raise HTTPException(status_code=403, detail=str(e))
+
+    # 3. 文件存在性
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="not found")
+
+    audit_log().emit(
+        "asset_access",
+        user=current_email,
+        job_id=job_id,
+        resource=f"{job_id}/{file_path}",
+        outcome="ok",
+    )
+    return FileResponse(target)
+
+
+@app.post("/api/asset/sign")
+async def sign_asset(request: Request, payload: Dict[str, Any]):
+    """
+    生成签名 URL。前端拿到文件相对路径后调用此接口换取带签名的完整链接。
+
+    payload: {
+        "job_id": "job_abc12345",
+        "path": "videos/shot_01.mp4",
+        "ttl_seconds": 3600   # 可选
+    }
+    """
+    user = require_user(request)
+    job_id = payload.get("job_id")
+    path = payload.get("path")
+    ttl = payload.get("ttl_seconds")
+    if not job_id or not path:
+        raise HTTPException(status_code=400, detail="job_id 与 path 必填")
+
+    signed = sign_asset_url(
+        job_id=job_id,
+        path=path,
+        user_email=user.email,
+        ttl_seconds=int(ttl) if ttl else None,
+        base_url=BASE_URL,
+    )
+    audit_log().emit(
+        "asset_sign",
+        user=user.email,
+        job_id=job_id,
+        resource=f"{job_id}/{path}",
+        outcome="ok",
+        details={"ttl_seconds": ttl},
+    )
+    return {"url": signed}
 
 if __name__ == "__main__":
     import uvicorn

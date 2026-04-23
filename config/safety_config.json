@@ -1,0 +1,36 @@
+{
+  "_comment": "运行时安全策略配置。MVP 阶段手动调整；Batch 2 改为可热更新。",
+  "rate_limits": {
+    "_comment": "每用户大模型调用上限；滑动窗口",
+    "per_user_per_hour": 120,
+    "per_user_per_day": 1000
+  },
+  "upload": {
+    "max_file_size_mb": 500,
+    "allowed_extensions": [".mp4", ".mov", ".m4v", ".webm", ".jpg", ".jpeg", ".png"],
+    "allowed_mime_prefixes": ["video/", "image/"],
+    "max_prompt_chars": 4000
+  },
+  "signed_url": {
+    "default_ttl_seconds": 3600,
+    "max_ttl_seconds": 86400
+  },
+  "material_tags": {
+    "INTERNAL": {
+      "label": "内部自制",
+      "requires_reference_source": false,
+      "allows_confidential_flag": true
+    },
+    "VIRAL_REF": {
+      "label": "爆款参考",
+      "requires_reference_source": true,
+      "allowed_reference_dimensions": ["structure", "pacing", "visual_style", "script_hook"],
+      "min_reference_dimensions": 1
+    }
+  },
+  "paths": {
+    "audit_log_dir": "logs/audit",
+    "users_file": "config/users.json",
+    "sensitive_terms_file": "config/sensitive_terms.json"
+  }
+}
