@@ -6,12 +6,14 @@ from google import genai
 from google.genai import types # 💡 引入类型定义
 from typing import Dict, Any, List, Union
 
+from core.safety.llm_gateway import gateway_client
+
 class AgentEngine:
     def __init__(self):
         from .utils import gemini_keys
         api_key = gemini_keys.get()
-        self.client = genai.Client(api_key=api_key)
-        self.model_id = "gemini-3-flash-preview" 
+        self.client = gateway_client(task="agent_intent_parse", api_key=api_key)
+        self.model_id = "gemini-3.1-pro-preview"
 
     def get_action_from_text(self, user_input: str, workflow_summary: str) -> Union[Dict, List]:
         system_prompt = f"""

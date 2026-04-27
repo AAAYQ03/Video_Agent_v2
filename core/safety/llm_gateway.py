@@ -225,3 +225,150 @@ def llm_gateway() -> LLMGateway:
             if _gateway is None:
                 _gateway = LLMGateway()
     return _gateway
+
+
+# ============================================================
+# 透明代理：让现有 client.models.generate_content(...) 走网关
+# ============================================================
+#
+# Batch 2 迁移用：把 `genai.Client(api_key=...)` 替换成
+# `gateway_client(task=..., job_id=...)` 后，**业务代码不用改**——
+# `client.files.upload(...)`、`client.models.generate_content(...)`
+# 等用法保持不变，只是 generate_content 自动走 LLMGateway 做限流+审计+脱敏。
+
+
+class _ModelsProxy:
+    """models 子对象的代理：generate_content 走网关，其他方法透传。"""
+
+    def __init__(self, owner: "GatewayClient"):
+        # 用 __dict__ 直写避免触发 __getattr__ 递归
+        self.__dict__["_owner"] = owner
+
+    def generate_content(self, *args, **kwargs) -> Any:
+        owner = self._owner
+        underlying_models = owner._underlying.models
+
+        # 抽取 prompt 用于审计（只取字符串部分，跳过 file/image 对象）
+        prompt_for_audit = _extract_audit_prompt(args, kwargs)
+
+        return llm_gateway().call(
+            GatewayRequest(
+                user_email=owner._user_email,
+                task=owner._task,
+                material_tag=owner._material_tag,
+                job_id=owner._job_id,
+                model_name=kwargs.get("model"),
+                prompt=prompt_for_audit,
+                # 闭包保留原始 args/kwargs，prompt 在 gateway 内只用于审计/脱敏
+                # 不实际替换 generate_content 的入参
+                call=lambda _redacted: underlying_models.generate_content(*args, **kwargs),
+            )
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        # 其他 models 方法（如 list_models）原样透传
+        return getattr(self.__dict__["_owner"]._underlying.models, name)
+
+
+class GatewayClient:
+    """
+    genai.Client 的透明包装。
+
+    与原 Client 接口 100% 兼容：
+      - client.models.generate_content(...) → 走网关（限流/审计/脱敏）
+      - client.files.upload / client.files.get / 其他 → 透传到原 client
+    """
+
+    def __init__(
+        self,
+        underlying: Any,
+        user_email: str,
+        task: str,
+        material_tag: str,
+        job_id: Optional[str],
+    ):
+        self.__dict__["_underlying"] = underlying
+        self.__dict__["_user_email"] = user_email
+        self.__dict__["_task"] = task
+        self.__dict__["_material_tag"] = material_tag
+        self.__dict__["_job_id"] = job_id
+        self.__dict__["_models_proxy"] = _ModelsProxy(self)
+
+    @property
+    def models(self):
+        return self._models_proxy
+
+    def __getattr__(self, name: str) -> Any:
+        # files / aio / 其他属性透传到底层 client
+        return getattr(self.__dict__["_underlying"], name)
+
+
+def gateway_client(
+    *,
+    task: str,
+    user_email: str = "system",
+    material_tag: str = "INTERNAL",
+    job_id: Optional[str] = None,
+    api_key: Optional[str] = None,
+    **client_kwargs: Any,
+) -> GatewayClient:
+    """
+    创建受网关管控的 Gemini 客户端。Batch 2 迁移点统一用这个替代 genai.Client(...)。
+
+    Args:
+        task:         本次客户端的业务用途（如 "film_ir_build", "agent_intent_parse"）。
+                      会进入审计日志便于追踪。
+        user_email:   触发用户。后台任务无 request context 时用 "system" 占位。
+        material_tag: 素材分级，用于脱敏决策。后台默认 "INTERNAL"，前台从
+                      jobs/{id}/material_metadata.json 读取。
+        job_id:       关联任务 ID，便于审计。
+        api_key:      可选；不传则从 gemini_keys 池取一个。
+        **client_kwargs: 透传给底层 genai.Client（如 http_options）。
+    """
+    from google import genai  # 局部 import 避免循环依赖与启动开销
+
+    if api_key is None:
+        from core.utils import gemini_keys
+
+        api_key = gemini_keys.get()
+
+    underlying = genai.Client(api_key=api_key, **client_kwargs)
+    return GatewayClient(
+        underlying=underlying,
+        user_email=user_email,
+        task=task,
+        material_tag=material_tag,
+        job_id=job_id,
+    )
+
+
+def _extract_audit_prompt(args: tuple, kwargs: dict) -> str:
+    """
+    从 generate_content 的入参里抽出文本部分用于审计/脱敏。
+    Gemini API 的 contents 可能是 str / List[Part] / List[mixed]，需要稳健处理。
+    """
+    contents = kwargs.get("contents")
+    if contents is None and args:
+        # 位置参数兜底（虽然官方推荐 kwargs）
+        for a in args:
+            if isinstance(a, (str, list)):
+                contents = a
+                break
+
+    if contents is None:
+        return ""
+    if isinstance(contents, str):
+        return contents[:8000]  # 截断防爆炸
+
+    # list 形态：把字符串部分拼起来，跳过 file/image 等非文本
+    if isinstance(contents, list):
+        parts: List[str] = []
+        for item in contents:
+            if isinstance(item, str):
+                parts.append(item)
+            elif hasattr(item, "text") and isinstance(item.text, str):
+                parts.append(item.text)
+            # else: 文件/图片对象等，跳过
+        return "\n".join(parts)[:8000]
+
+    return str(contents)[:8000]

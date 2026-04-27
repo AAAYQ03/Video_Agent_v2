@@ -7,53 +7,30 @@
 
 ## 未完成工作
 
-### ⏳ Batch 2（高优）：迁移 12 个 Gemini 直调点到统一网关
+### 已完成 Batch 2 ✅：12 个 Gemini 直调点已全部迁移到 `gateway_client()`
 
-**为什么必须做：**
-Batch 1 已经把 `core/safety/llm_gateway.py` 网关壳子建好，**但业务代码里 12 处 `genai.Client()` 直调绕过了网关**——限流、审计、脱敏三个管控对大模型调用**目前全部失效**。
-
-**不做的代价：**
-不能对外宣称"大模型调用有限流与审计"。
-
-**12 个迁移点**（grep 过，精确到行）：
-
-| 文件 | 行号 | 场景 |
-|---|---|---|
-| `core/agent_engine.py` | 13 | agent 意图解析 |
-| `core/film_ir_manager.py` | 527, 1721, 1834, 1979, 2120 | Film IR 四支柱构建（5 处） |
-| `core/workflow_manager.py` | 448 | 工作流编排 |
-| `core/asset_generator.py` | 101, 1216 | 资产生成（图像） |
-| `core/runner.py` | 274, 494 | Runner 执行器 |
-| `core/eval_job.py` | 452 | 质量评估 |
-
-**迁移模板：**
+迁移采用**透明代理**模式（`core/safety/llm_gateway.py:GatewayClient`）——
+`client.models.generate_content(...)` 走网关（限流+审计+脱敏），
+其他方法（`files.upload` 等）原样透传，业务代码改动最小：
 
 ```python
-# Before
-from google import genai
+# 迁移前
 client = genai.Client(api_key=api_key)
-resp = client.models.generate_content(model="gemini-2.5-pro", contents=[prompt])
-
-# After
-from core.safety.llm_gateway import llm_gateway, GatewayRequest
-resp = llm_gateway().call(GatewayRequest(
-    user_email=current_user_email,        # 从 request.state.user 传下来
-    task="film_ir_build",                 # 本次调用的业务含义
-    material_tag=material_tag_from_job,   # 从 jobs/{id}/material_metadata.json 读
-    job_id=job_id,
-    model_name="gemini-2.5-pro",
-    prompt=prompt,
-    call=lambda p: genai.Client(api_key=api_key).models.generate_content(
-        model="gemini-2.5-pro", contents=[p]
-    ),
-))
+# 迁移后
+client = gateway_client(task="film_ir_build", api_key=api_key, job_id=...)
 ```
 
-**改完要跑端到端：**
-```bash
-SAFETY_AUTH_ENABLED=false python3 -m pytest tests/test_safety.py -q
-# 然后本地起服务跑一次完整上传→生成 smoke
-```
+**已迁移的 12 处**（commit 时一次性完成）：
+- `core/agent_engine.py:13` → task="agent_intent_parse"
+- `core/film_ir_manager.py:527,1721,1834,1979,2120` → task="film_ir_*"
+- `core/workflow_manager.py:448` → task="workflow_director_analysis"
+- `core/asset_generator.py:101,1216` → task="asset_*"
+- `core/runner.py:274,494` → task="runner_*"
+- `core/eval_job.py:452` → task="eval_llm_judge"
+
+**当前已生效的管控**：审计日志（每次调用记录 user/task/job_id/model/耗时）、限流（每用户/小时/天）、脱敏钩子。
+
+**当前的限定**：后台任务仍用 `user_email="system"` 占位——把 request 上下文（真实用户）下沉到这些函数是独立任务，未列入 Batch 2 范围。
 
 ---
 
@@ -63,6 +40,18 @@ SAFETY_AUTH_ENABLED=false python3 -m pytest tests/test_safety.py -q
 - 输出端 PII 正则扫描接入 eval_job 流水线
 - 爆款参考的 logo / 人脸 / 标志台词相似度比对（产出端版权管控）
 - 审计日志可视化接口 `/api/admin/audit`（admin 查询）
+
+### Mode 1 反哺：节点级重试历史（独立任务）
+
+**为什么**：Mode 1 任何一步失败 → 整个任务失败重来，浪费前面跑过的分析和抽帧。
+Mode 2 设计的"节点级 retry_history"概念可以反哺到 Mode 1，让失败节点能带着失败原因重跑（换提示词重试而非盲目重跑）。
+
+**改造点**：
+- `core/workflow_manager.py` 给每个 stage 加 `retry_history` 字段
+- `core/runner.py` 失败时记录 reason，下次重跑时作为 prompt 上下文
+- 不重跑成功节点（节流复用 Mode 1 的产物）
+
+**为什么不放进 Mode 2 计划**：这是 Mode 1 的局部增强，不依赖 Mode 2 任何新组件，可以独立完成。等 Mode 2 Phase 2 设计稳定后再做，复用其 retry_history 数据结构。
 
 ---
 

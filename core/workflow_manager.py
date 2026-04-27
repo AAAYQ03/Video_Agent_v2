@@ -24,6 +24,8 @@ from google import genai
 from analyze_video import DIRECTOR_METAPROMPT, wait_until_file_active, extract_json_array
 from extract_frames import to_seconds
 
+from core.safety.llm_gateway import gateway_client
+
 class WorkflowManager:
     def __init__(self, job_id: Optional[str] = None, project_root: Optional[Path] = None):
         self.project_dir = project_root or Path(__file__).parent.parent
@@ -445,11 +447,15 @@ class WorkflowManager:
         from google.genai import types
         from .utils import gemini_keys
         api_key = gemini_keys.get()
-        client = genai.Client(api_key=api_key)
+        client = gateway_client(
+            task="workflow_director_analysis",
+            api_key=api_key,
+            job_id=getattr(self, "job_id", None),
+        )
         uploaded = client.files.upload(file=str(video_path))
         video_file = wait_until_file_active(client, uploaded)
         response = client.models.generate_content(
-            model="gemini-3-flash-preview",
+            model="gemini-3.1-pro-preview",
             contents=[DIRECTOR_METAPROMPT, video_file],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -501,7 +507,7 @@ class WorkflowManager:
 
         try:
             merge_response = client.models.generate_content(
-                model="gemini-3-flash-preview",
+                model="gemini-3.1-pro-preview",
                 contents=[merge_prompt],
             )
             merge_text = merge_response.text.strip()

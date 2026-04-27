@@ -463,3 +463,122 @@ def _make_audit_factory(dir_):
     def factory(log_dir=None):
         return AuditLog(log_dir=dir_)
     return factory
+
+
+# ============================================================
+# GatewayClient 透明代理（Batch 2 迁移基础设施）
+# ============================================================
+
+
+class _FakeModels:
+    """假的 genai.Client.models，记录调用参数。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def generate_content(self, *args, **kwargs):
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return type("FakeResp", (), {"text": "fake response"})()
+
+    def some_other_method(self):
+        return "passthrough_models"
+
+
+class _FakeFiles:
+    def upload(self, file=None):
+        return f"uploaded:{file}"
+
+
+class _FakeUnderlyingClient:
+    """模拟 google.genai.Client 的最小接口，让代理测试无需真实 API。"""
+
+    def __init__(self):
+        self.models = _FakeModels()
+        self.files = _FakeFiles()
+
+    @property
+    def some_other_attr(self):
+        return "passthrough_root"
+
+
+class TestGatewayClient:
+    def _make_client(self, monkeypatch, tmp_path, **overrides):
+        # 1. 把 audit log 指向临时目录避免污染
+        import core.safety.audit_log as audit_mod
+
+        audit_mod._singleton = None
+        monkeypatch.setattr(audit_mod, "AuditLog", _make_audit_factory(tmp_path))
+
+        # 2. 不真的调 google.genai.Client；直接构造 GatewayClient 包装假 underlying
+        from core.safety.llm_gateway import GatewayClient
+
+        underlying = _FakeUnderlyingClient()
+        defaults = dict(
+            underlying=underlying,
+            user_email="creator1@example.com",
+            task="test_task",
+            material_tag="INTERNAL",
+            job_id="job_test",
+        )
+        defaults.update(overrides)
+        return GatewayClient(**defaults), underlying
+
+    def test_generate_content_goes_through_gateway(self, tmp_path, monkeypatch):
+        client, underlying = self._make_client(monkeypatch, tmp_path)
+        resp = client.models.generate_content(model="gemini-2.5-pro", contents=["hello"])
+
+        # 底层 generate_content 真的被调用了
+        assert len(underlying.models.calls) == 1
+        assert underlying.models.calls[0]["kwargs"]["model"] == "gemini-2.5-pro"
+        assert resp.text == "fake response"
+
+        # 审计日志记录了这次调用
+        files = list(tmp_path.glob("*.jsonl"))
+        assert len(files) == 1
+        lines = files[0].read_text().strip().splitlines()
+        outcomes = [json.loads(line)["outcome"] for line in lines]
+        assert "start" in outcomes and "ok" in outcomes
+
+    def test_files_passthrough(self, tmp_path, monkeypatch):
+        client, _ = self._make_client(monkeypatch, tmp_path)
+        # files.upload 不走网关，直接透传
+        result = client.files.upload(file="/tmp/foo.mp4")
+        assert result == "uploaded:/tmp/foo.mp4"
+
+        # 没有审计记录
+        files = list(tmp_path.glob("*.jsonl"))
+        assert len(files) == 0 or not files[0].read_text().strip()
+
+    def test_other_models_methods_passthrough(self, tmp_path, monkeypatch):
+        client, _ = self._make_client(monkeypatch, tmp_path)
+        # models.<其他方法> 透传
+        assert client.models.some_other_method() == "passthrough_models"
+
+    def test_other_root_attrs_passthrough(self, tmp_path, monkeypatch):
+        client, _ = self._make_client(monkeypatch, tmp_path)
+        # client.<根级别其他属性> 透传
+        assert client.some_other_attr == "passthrough_root"
+
+    def test_audit_includes_user_task_job(self, tmp_path, monkeypatch):
+        client, _ = self._make_client(
+            monkeypatch, tmp_path,
+            user_email="alice@x.com", task="film_ir_build", job_id="job_abc",
+        )
+        client.models.generate_content(model="gemini-2.5-pro", contents=["test"])
+
+        line = list(tmp_path.glob("*.jsonl"))[0].read_text().strip().splitlines()[0]
+        rec = json.loads(line)
+        assert rec["user"] == "alice@x.com"
+        assert rec["job_id"] == "job_abc"
+        assert rec["details"]["task"] == "film_ir_build"
+
+    def test_extract_audit_prompt_str_and_list(self):
+        from core.safety.llm_gateway import _extract_audit_prompt
+
+        # 字符串
+        assert _extract_audit_prompt((), {"contents": "hello"}) == "hello"
+        # 列表混合内容
+        result = _extract_audit_prompt((), {"contents": ["text1", "text2"]})
+        assert "text1" in result and "text2" in result
+        # 空
+        assert _extract_audit_prompt((), {}) == ""

@@ -15,6 +15,8 @@ from enum import Enum
 from PIL import Image
 import io
 
+from core.safety.llm_gateway import gateway_client
+
 
 class AssetType(Enum):
     """资产类型"""
@@ -98,7 +100,7 @@ class AssetGenerator:
             api_key = api_key.strip()
             api_key = ''.join(c for c in api_key if c.isascii() and c.isprintable())
 
-            self.client = genai.Client(api_key=api_key)
+            self.client = gateway_client(task="asset_generation_init", api_key=api_key)
             self.types = types
             print(f"✅ Gemini client initialized for asset generation")
 
@@ -1213,7 +1215,7 @@ def generate_product_views_with_imagen(
         api_key = api_key.strip()
         api_key = ''.join(c for c in api_key if c.isascii() and c.isprintable())
 
-        generator.client = genai.Client(api_key=api_key)
+        generator.client = gateway_client(task="asset_three_views", api_key=api_key)
         generator.types = types
     except Exception as e:
         print(f"❌ Failed to initialize Gemini client: {e}")

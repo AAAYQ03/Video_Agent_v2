@@ -13,6 +13,8 @@ from .utils import get_ffmpeg_path, gemini_keys, seedance_keys
 from .film_ir_io import load_film_ir, film_ir_exists
 from typing import Dict, Any, Optional, Tuple
 
+from core.safety.llm_gateway import gateway_client
+
 
 def ensure_videos_dir(job_dir: Path) -> Path:
     videos_dir = job_dir / "videos"
@@ -271,7 +273,12 @@ def ai_stylize_frame(job_dir: Path, wf: dict, shot: dict) -> str:
     from google.genai import types
 
     api_key = gemini_keys.get()
-    client = genai.Client(api_key=api_key, http_options={'api_version': 'v1beta'})
+    client = gateway_client(
+        task="runner_stylize_frame",
+        api_key=api_key,
+        job_id=job_dir.name if job_dir else None,
+        http_options={'api_version': 'v1beta'},
+    )
 
     src = job_dir / shot["assets"]["first_frame"]
     dst = job_dir / "stylized_frames" / f"{shot['shot_id']}.png"
@@ -491,7 +498,11 @@ def veo_generate_video(job_dir: Path, wf: dict, shot: dict) -> str:
 
     api_key = gemini_keys.get()
     # 使用与 video_generator.py 相同的客户端初始化方式
-    client = genai.Client(api_key=api_key)
+    client = gateway_client(
+        task="runner_veo_video",
+        api_key=api_key,
+        job_id=job_dir.name if job_dir else None,
+    )
 
     videos_dir = ensure_videos_dir(job_dir)
     out_path = videos_dir / f"{shot['shot_id']}.mp4"

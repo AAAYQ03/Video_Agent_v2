@@ -23,6 +23,8 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 
+from core.safety.llm_gateway import gateway_client
+
 
 def gemini_call_with_retry(client, model: str, contents: list, config=None, max_retries: int = 2, base_delay: float = 5.0):
     """
@@ -330,13 +332,20 @@ class FilmIRManager:
     # 阶段实现 (预留接口，等待 Meta Prompts)
     # ============================================================
 
-    def _run_specific_analysis(self) -> Dict[str, Any]:
+    def _run_specific_analysis(self, on_substep=None) -> Dict[str, Any]:
         """
         阶段 1: 具体分析
         调用 Meta Prompts 提取四大支柱的 concrete 数据
 
         优化: 视频只上传一次，三个分析复用同一个文件引用
+
+        Args:
+            on_substep: 可选回调 (step_index, step_name, status) → None
+                        用于 Agent 模式下的子步骤进度推送
         """
+        def _notify(step_index, step_name, status):
+            if on_substep:
+                on_substep(step_index, step_name, status)
         print(f"🔍 [Stage 1] Running specific analysis for {self.job_id}...")
 
         # 获取视频路径
@@ -358,6 +367,7 @@ class FilmIRManager:
         # ============================================================
         # Step 1: Story Theme Analysis (支柱 I) - Concrete + Abstract 融合输出
         # ============================================================
+        _notify(0, "主题分析", "running")
         print(f"📊 [Stage 1.1] Analyzing Story Theme...")
 
         try:
@@ -372,15 +382,19 @@ class FilmIRManager:
                 self.ir["pillars"]["I_storyTheme"]["abstract"] = abstract_data
                 self.save()
                 print(f"✅ [Stage 1.1] Story Theme analysis completed (concrete + abstract)")
+                _notify(0, "主题分析", "success")
             else:
                 print(f"⚠️ [Stage 1.1] Story Theme analysis returned empty result")
+                _notify(0, "主题分析", "success")
         except Exception as e:
             print(f"❌ [Stage 1.1] Story Theme analysis failed: {e}")
+            _notify(0, "主题分析", "failed")
             return {"status": "error", "reason": f"Story Theme analysis failed: {e}"}
 
         # ============================================================
         # Step 2: Narrative Extraction (支柱 II) - Concrete + Abstract 融合输出
         # ============================================================
+        _notify(1, "脚本分析", "running")
         print(f"📝 [Stage 1.2] Extracting Narrative Template...")
 
         try:
@@ -397,15 +411,19 @@ class FilmIRManager:
                 self.ir["pillars"]["II_narrativeTemplate"]["hiddenAssets"] = hidden_assets
                 self.save()
                 print(f"✅ [Stage 1.2] Narrative extraction completed (concrete + abstract + hiddenAssets)")
+                _notify(1, "脚本分析", "success")
             else:
                 print(f"⚠️ [Stage 1.2] Narrative extraction returned empty result")
+                _notify(1, "脚本分析", "success")
         except Exception as e:
             print(f"❌ [Stage 1.2] Narrative extraction failed: {e}")
+            _notify(1, "脚本分析", "failed")
             # 不阻塞流程，继续执行
 
         # ============================================================
         # Step 3: Shot Decomposition (支柱 III) - Concrete + Abstract 融合输出
         # ============================================================
+        _notify(2, "分镜切割", "running")
         print(f"🎬 [Stage 1.3] Decomposing Shot Recipe...")
 
         try:
@@ -439,10 +457,13 @@ class FilmIRManager:
                     print(f"⚠️ [Stage 1.3] Shot Recipe completed: {total_shots} shots ({degraded_count} degraded, can retry)")
                 else:
                     print(f"✅ [Stage 1.3] Shot Recipe completed ({total_shots} shots extracted)")
+                _notify(2, "分镜切割", "success")
             else:
                 print(f"⚠️ [Stage 1.3] Shot Recipe returned empty result")
+                _notify(2, "分镜切割", "success")
         except Exception as e:
             print(f"❌ [Stage 1.3] Shot Recipe analysis failed: {e}")
+            _notify(2, "分镜切割", "failed")
             import traceback
             traceback.print_exc()
             # 不阻塞流程
@@ -450,6 +471,7 @@ class FilmIRManager:
         # ============================================================
         # Step 4: Character Ledger Generation (支柱 II 扩展) - 两阶段识别
         # ============================================================
+        _notify(3, "角色发现", "running")
         print(f"👥 [Stage 1.4] Generating Character Ledger (two-phase clustering)...")
 
         try:
@@ -473,12 +495,16 @@ class FilmIRManager:
                     self.save()
                     print(f"✅ [Stage 1.4] Character Ledger completed:")
                     print(get_ledger_display_summary(ledger_result))
+                    _notify(3, "角色发现", "success")
                 else:
                     print(f"⚠️ [Stage 1.4] Character Ledger generation returned empty result")
+                    _notify(3, "角色发现", "success")
             else:
                 print(f"⚠️ [Stage 1.4] Skipped - no shots available for clustering")
+                _notify(3, "角色发现", "skipped")
         except Exception as e:
             print(f"❌ [Stage 1.4] Character Ledger generation failed: {e}")
+            _notify(3, "角色发现", "failed")
             import traceback
             traceback.print_exc()
             # 不阻塞流程
@@ -500,7 +526,11 @@ class FilmIRManager:
         from .utils import gemini_keys
         api_key = gemini_keys.get()
 
-        client = genai.Client(api_key=api_key)
+        client = gateway_client(
+            task="film_ir_video_upload",
+            api_key=api_key,
+            job_id=self.job_dir.name if hasattr(self, "job_dir") and self.job_dir else None,
+        )
 
         # 上传视频文件
         uploaded_file = client.files.upload(file=str(video_path))
@@ -537,7 +567,7 @@ class FilmIRManager:
         print(f"🤖 Calling Gemini API for Story Theme analysis...")
         response = gemini_call_with_retry(
             client=client,
-            model="gemini-3-flash-preview",
+            model="gemini-3.1-pro-preview",
             contents=[prompt, uploaded_file],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -570,7 +600,7 @@ class FilmIRManager:
         print(f"🤖 Calling Gemini API for Narrative extraction...")
         response = gemini_call_with_retry(
             client=client,
-            model="gemini-3-flash-preview",
+            model="gemini-3.1-pro-preview",
             contents=[prompt, uploaded_file],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -612,7 +642,7 @@ class FilmIRManager:
 
         response = gemini_call_with_retry(
             client=client,
-            model="gemini-3-flash-preview",
+            model="gemini-3.1-pro-preview",
             contents=[phase1_prompt, uploaded_file],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -810,7 +840,7 @@ class FilmIRManager:
 
                 response = gemini_call_with_retry(
                     client=client,
-                    model="gemini-3-flash-preview",
+                    model="gemini-3.1-pro-preview",
                     contents=[batch_prompt, uploaded_file],
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json"
@@ -903,7 +933,7 @@ class FilmIRManager:
             time.sleep(2)
             response = gemini_call_with_retry(
                 client=client,
-                model="gemini-3-flash-preview",
+                model="gemini-3.1-pro-preview",
                 contents=[split_prompt, uploaded_file],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json"
@@ -978,7 +1008,7 @@ class FilmIRManager:
 
         discovery_response = gemini_call_with_retry(
             client=client,
-            model="gemini-3-flash-preview",
+            model="gemini-3.1-pro-preview",
             contents=discovery_contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1031,7 +1061,7 @@ class FilmIRManager:
         # Single API call for all characters × all shots
         audit_response = gemini_call_with_retry(
             client=client,
-            model="gemini-3-flash-preview",
+            model="gemini-3.1-pro-preview",
             contents=audit_contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1109,7 +1139,7 @@ class FilmIRManager:
 
         env_response = gemini_call_with_retry(
             client=client,
-            model="gemini-3-flash-preview",
+            model="gemini-3.1-pro-preview",
             contents=[env_prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1196,7 +1226,7 @@ class FilmIRManager:
 
                 recheck_response = gemini_call_with_retry(
                     client=client,
-                    model="gemini-3-flash-preview",
+                    model="gemini-3.1-pro-preview",
                     contents=recheck_contents,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
@@ -1694,7 +1724,11 @@ class FilmIRManager:
         from .utils import gemini_keys
         api_key = gemini_keys.get()
 
-        client = genai.Client(api_key=api_key)
+        client = gateway_client(
+            task="film_ir_intent_parse",
+            api_key=api_key,
+            job_id=self.job_dir.name if hasattr(self, "job_dir") and self.job_dir else None,
+        )
 
         # 格式化 Character Ledger 为可读文本
         character_ledger = character_ledger or []
@@ -1725,7 +1759,7 @@ class FilmIRManager:
         # 调用 Gemini API
         print(f"🤖 Calling Gemini API for intent parsing...")
         response = client.models.generate_content(
-            model="gemini-3-flash-preview",
+            model="gemini-3.1-pro-preview",
             contents=[prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -1807,7 +1841,11 @@ class FilmIRManager:
         from .utils import gemini_keys
         api_key = gemini_keys.get()
 
-        client = genai.Client(api_key=api_key)
+        client = gateway_client(
+            task="film_ir_intent_fusion",
+            api_key=api_key,
+            job_id=self.job_dir.name if hasattr(self, "job_dir") and self.job_dir else None,
+        )
 
         # 检测视频宽高比
         from .utils import detect_aspect_ratio
@@ -1830,7 +1868,7 @@ class FilmIRManager:
         # 调用 Gemini API
         print(f"🤖 Calling Gemini API for intent fusion...")
         response = client.models.generate_content(
-            model="gemini-3-flash-preview",
+            model="gemini-3.1-pro-preview",
             contents=[prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -1952,7 +1990,11 @@ class FilmIRManager:
         """
         from .utils import gemini_keys
         api_key = gemini_keys.get()
-        client = genai.Client(api_key=api_key)
+        client = gateway_client(
+            task="film_ir_anchors",
+            api_key=api_key,
+            job_id=self.job_dir.name if hasattr(self, "job_dir") and self.job_dir else None,
+        )
 
         # 提取原始视频中的独特主体和场景
         unique_elements = self._extract_unique_subjects_and_scenes(
@@ -2071,7 +2113,7 @@ Output ONLY valid JSON. No markdown, no explanation.
 """
 
         response = client.models.generate_content(
-            model="gemini-3-flash-preview",
+            model="gemini-3.1-pro-preview",
             contents=[prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -2093,7 +2135,11 @@ Output ONLY valid JSON. No markdown, no explanation.
         """
         from .utils import gemini_keys, detect_aspect_ratio
         api_key = gemini_keys.get()
-        client = genai.Client(api_key=api_key)
+        client = gateway_client(
+            task="film_ir_shot_prompts",
+            api_key=api_key,
+            job_id=self.job_dir.name if hasattr(self, "job_dir") and self.job_dir else None,
+        )
 
         # 检测视频宽高比
         aspect_ratio = detect_aspect_ratio(self.job_dir / "input.mp4")
@@ -2174,7 +2220,7 @@ Output ONLY valid JSON array. No markdown.
 """
 
         response = client.models.generate_content(
-            model="gemini-3-flash-preview",
+            model="gemini-3.1-pro-preview",
             contents=[prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
