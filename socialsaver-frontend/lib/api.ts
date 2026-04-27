@@ -78,9 +78,13 @@ interface UploadStatus {
 /**
  * Upload video (async mode - returns immediately)
  *
- * material_tag 默认 "INTERNAL"。Batch 1 设计原意是让用户在 UI 强制选择
- * "内部自制 / 爆款参考"——这个 UI 入口尚未实现，先用 INTERNAL 兜底。
- * TODO: 在 UI 加素材分级选择器，用户必须显式勾选才能上传。
+ * material_tag 默认 "INTERNAL"——Batch 1 设计原意是让用户显式选择
+ * "内部自制 / 爆款参考"，agent-canvas 上传 UI 已实装这个选择器
+ * (app/dashboard/agent-canvas/page.tsx)。其他调用点（如 Mode 1 的 remix）
+ * 仍走默认值。
+ *
+ * VIRAL_REF 的两个必填字段（referenceUrl / referenceDimensions）由
+ * 调用方在 UI 收集后传入；后端 input_guard 会做最终校验。
  */
 export interface UploadOptions {
   materialTag?: "INTERNAL" | "VIRAL_REF";

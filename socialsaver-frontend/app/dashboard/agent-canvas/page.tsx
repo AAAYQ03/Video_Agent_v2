@@ -108,6 +108,29 @@ function AgentCanvasPage() {
   const [dragActive, setDragActive] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // 素材分级（Batch 1 设计原意：让用户显式选择，责任前置）
+  const [materialTag, setMaterialTag] = useState<"INTERNAL" | "VIRAL_REF">("INTERNAL")
+  const [containsConfidential, setContainsConfidential] = useState(false)
+  const [referenceUrl, setReferenceUrl] = useState("")
+  const [referenceDimensions, setReferenceDimensions] = useState<string[]>([])
+
+  const REFERENCE_DIMENSIONS = [
+    { value: "structure", label: "结构" },
+    { value: "pacing", label: "节奏" },
+    { value: "visual_style", label: "视觉风格" },
+    { value: "script_hook", label: "脚本钩子" },
+  ]
+
+  const isMaterialValid =
+    materialTag === "INTERNAL" ||
+    (referenceUrl.trim().length > 0 && referenceDimensions.length > 0)
+
+  const toggleDimension = (value: string) => {
+    setReferenceDimensions((prev) =>
+      prev.includes(value) ? prev.filter((d) => d !== value) : [...prev, value]
+    )
+  }
+
   const {
     setJobId, setGraph, updateNodeStatus,
     graph, selectedNodeId, isConnected, agentStatus,
@@ -204,9 +227,24 @@ function AgentCanvasPage() {
   // 处理文件上传
   const handleFileUpload = async (file: File) => {
     if (!file.type.startsWith("video/")) return
+    if (!isMaterialValid) {
+      setAnalysisStatus("⚠️ 请先填写完整的素材信息")
+      return
+    }
     setUploading(true)
     try {
-      const result = await uploadVideo(file)
+      const result = await uploadVideo(file, {
+        materialTag,
+        ...(materialTag === "INTERNAL" && containsConfidential
+          ? { containsConfidential: true }
+          : {}),
+        ...(materialTag === "VIRAL_REF"
+          ? {
+              referenceUrl: referenceUrl.trim(),
+              referenceDimensions,
+            }
+          : {}),
+      })
       const newJobId = result.job_id
       setLocalJobId(newJobId)
       setJobId(newJobId)
@@ -338,30 +376,154 @@ function AgentCanvasPage() {
           {/* 覆盖层：上传视频（无 jobId 时） */}
           {!hasVideo && (
             <div className="absolute inset-0 flex items-center justify-center z-20 bg-gray-950/80 backdrop-blur-sm">
-              <div
-                className={`
-                  border-2 border-dashed rounded-xl p-12 w-[500px] text-center cursor-pointer transition-colors
-                  ${dragActive ? "border-blue-500 bg-blue-500/10" : "border-gray-700 hover:border-gray-500 bg-gray-900"}
-                `}
-                onDragEnter={handleDrag}
-                onDragLeave={handleDrag}
-                onDragOver={handleDrag}
-                onDrop={handleDrop}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <input ref={fileInputRef} type="file" accept="video/*" className="hidden" onChange={handleFileSelect} />
-                {uploading ? (
-                  <>
-                    <Loader2 className="w-10 h-10 text-blue-400 mx-auto mb-4 animate-spin" />
-                    <p className="text-gray-300">上传中...</p>
-                  </>
-                ) : (
-                  <>
-                    <Upload className="w-10 h-10 text-gray-500 mx-auto mb-4" />
-                    <p className="text-gray-300 mb-2">拖拽视频到这里，或点击选择</p>
-                    <p className="text-xs text-gray-500">支持 MP4, MOV, AVI 等格式</p>
-                  </>
-                )}
+              <div className="bg-gray-900 border border-gray-700 rounded-xl w-[540px] shadow-2xl overflow-hidden">
+
+                {/* 上半：素材分级表单 */}
+                <div className="p-5 border-b border-gray-700 space-y-4">
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-2">
+                      素材类别 <span className="text-red-400">*</span>
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setMaterialTag("INTERNAL")}
+                        className={`p-3 rounded-lg border text-left transition-colors ${
+                          materialTag === "INTERNAL"
+                            ? "border-blue-500 bg-blue-500/10"
+                            : "border-gray-700 hover:border-gray-600 bg-gray-800/50"
+                        }`}
+                      >
+                        <div className="text-sm font-medium text-gray-200">内部自制</div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          自家拍 / 自家采购的素材
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMaterialTag("VIRAL_REF")}
+                        className={`p-3 rounded-lg border text-left transition-colors ${
+                          materialTag === "VIRAL_REF"
+                            ? "border-amber-500 bg-amber-500/10"
+                            : "border-gray-700 hover:border-gray-600 bg-gray-800/50"
+                        }`}
+                      >
+                        <div className="text-sm font-medium text-gray-200">爆款参考</div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          外部爆款用于学习模仿
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* INTERNAL 选项 */}
+                  {materialTag === "INTERNAL" && (
+                    <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={containsConfidential}
+                        onChange={(e) => setContainsConfidential(e.target.checked)}
+                        className="rounded border-gray-600"
+                      />
+                      含未公开信息（保密级，将走加强审计与导出审批）
+                    </label>
+                  )}
+
+                  {/* VIRAL_REF 必填字段 */}
+                  {materialTag === "VIRAL_REF" && (
+                    <>
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1">
+                          原片链接 <span className="text-red-400">*</span>
+                        </label>
+                        <input
+                          type="url"
+                          value={referenceUrl}
+                          onChange={(e) => setReferenceUrl(e.target.value)}
+                          placeholder="https://www.tiktok.com/..."
+                          className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-amber-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1.5">
+                          参考维度 <span className="text-red-400">*</span>
+                          <span className="text-gray-600 ml-1">（至少选 1 项）</span>
+                        </label>
+                        <div className="flex flex-wrap gap-1.5">
+                          {REFERENCE_DIMENSIONS.map((d) => {
+                            const selected = referenceDimensions.includes(d.value)
+                            return (
+                              <button
+                                key={d.value}
+                                type="button"
+                                onClick={() => toggleDimension(d.value)}
+                                className={`px-2.5 py-1 rounded text-xs border transition-colors ${
+                                  selected
+                                    ? "border-amber-500 bg-amber-500/10 text-amber-300"
+                                    : "border-gray-700 text-gray-400 hover:border-gray-600"
+                                }`}
+                              >
+                                {d.label}
+                              </button>
+                            )
+                          })}
+                        </div>
+                        <p className="text-xs text-gray-600 mt-1.5">
+                          这是合规留证字段——出现版权疑问时能证明"参考学习不是抄袭"
+                        </p>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* 下半：拖拽 / 点击区 */}
+                <div
+                  className={`p-10 text-center transition-colors ${
+                    isMaterialValid
+                      ? `cursor-pointer ${
+                          dragActive
+                            ? "bg-blue-500/10"
+                            : "hover:bg-gray-800/40"
+                        }`
+                      : "opacity-50 cursor-not-allowed"
+                  }`}
+                  onDragEnter={isMaterialValid ? handleDrag : undefined}
+                  onDragLeave={handleDrag}
+                  onDragOver={isMaterialValid ? handleDrag : undefined}
+                  onDrop={isMaterialValid ? handleDrop : undefined}
+                  onClick={() => isMaterialValid && fileInputRef.current?.click()}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="video/*"
+                    className="hidden"
+                    onChange={handleFileSelect}
+                  />
+                  {uploading ? (
+                    <>
+                      <Loader2 className="w-8 h-8 text-blue-400 mx-auto mb-3 animate-spin" />
+                      <p className="text-sm text-gray-300">上传中...</p>
+                    </>
+                  ) : !isMaterialValid ? (
+                    <>
+                      <Upload className="w-8 h-8 text-gray-700 mx-auto mb-3" />
+                      <p className="text-sm text-amber-400/70">
+                        请先完成素材信息再上传
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-8 h-8 text-gray-500 mx-auto mb-3" />
+                      <p className="text-sm text-gray-300 mb-1">
+                        拖拽视频到这里，或点击选择
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        MP4 / MOV / WebM 等
+                      </p>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
           )}
