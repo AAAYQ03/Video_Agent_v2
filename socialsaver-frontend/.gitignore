@@ -3,6 +3,10 @@
 # dependencies
 /node_modules
 
+# 强制 pnpm 单一包管理器；package-lock.json (npm) 和 yarn.lock (yarn) 不入库
+package-lock.json
+yarn.lock
+
 # next.js
 /.next/
 /out/
