@@ -136,7 +136,25 @@ class GatewayRequest:
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
+# 服务端临时错误（值得退避重试）
+_RETRYABLE_PATTERNS = (
+    "503", "unavailable",      # 模型过载
+    "500", "internal",          # Google 内部错误
+    "504", "deadline_exceeded", # 超时
+    "429", "resource_exhausted", "quota",  # 限流（RPM 退避后可能恢复）
+)
+
+
+def _is_retryable(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(p in msg for p in _RETRYABLE_PATTERNS)
+
+
 class LLMGateway:
+    # 自动重试配置
+    MAX_RETRIES = 3
+    BACKOFF_BASE = 1.0  # 第 N 次重试前等 BACKOFF_BASE * 2^N 秒（1s / 2s / 4s）
+
     def __init__(self, rate_limiter: Optional[_InMemoryRateLimiter] = None):
         cfg = get_config()["rate_limits"]
         self.limiter = rate_limiter or _InMemoryRateLimiter(
@@ -179,24 +197,62 @@ class LLMGateway:
             },
         )
 
-        # 4. 真正调用
+        # 4. 真正调用——带指数退避自动重试
         start = time.time()
-        try:
-            result = req.call(prompt)
-        except Exception as exc:
-            audit.emit(
-                "llm_call",
-                user=req.user_email,
-                job_id=req.job_id,
-                resource=req.model_name or req.task,
-                outcome="error",
-                details={
-                    "task": req.task,
-                    "elapsed_ms": int((time.time() - start) * 1000),
-                    "error": str(exc)[:500],
-                },
-            )
-            raise
+        last_exc: Optional[Exception] = None
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                result = req.call(prompt)
+                break  # 成功跳出
+            except Exception as exc:
+                last_exc = exc
+                # 不可重试错误（4xx 我们的 bug）→ 立即抛
+                if not _is_retryable(exc):
+                    audit.emit(
+                        "llm_call",
+                        user=req.user_email, job_id=req.job_id,
+                        resource=req.model_name or req.task,
+                        outcome="error",
+                        details={
+                            "task": req.task,
+                            "elapsed_ms": int((time.time() - start) * 1000),
+                            "error": str(exc)[:500],
+                            "retryable": False,
+                        },
+                    )
+                    raise
+                # 最后一次还是失败 → 抛
+                if attempt == self.MAX_RETRIES - 1:
+                    audit.emit(
+                        "llm_call",
+                        user=req.user_email, job_id=req.job_id,
+                        resource=req.model_name or req.task,
+                        outcome="error",
+                        details={
+                            "task": req.task,
+                            "elapsed_ms": int((time.time() - start) * 1000),
+                            "error": str(exc)[:500],
+                            "retryable": True,
+                            "attempts": self.MAX_RETRIES,
+                        },
+                    )
+                    raise
+                # 中间次失败 → 退避后重试
+                wait = self.BACKOFF_BASE * (2 ** attempt)
+                audit.emit(
+                    "llm_call",
+                    user=req.user_email, job_id=req.job_id,
+                    resource=req.model_name or req.task,
+                    outcome="retry_backoff",
+                    details={
+                        "task": req.task,
+                        "attempt": attempt + 1,
+                        "wait_seconds": wait,
+                        "error": str(exc)[:300],
+                    },
+                )
+                print(f"⏳ [llm_gateway] {req.task} 第 {attempt+1} 次失败 ({type(exc).__name__})，{wait}s 后重试")
+                time.sleep(wait)
 
         # 5. 审计（调用后）
         audit.emit(
