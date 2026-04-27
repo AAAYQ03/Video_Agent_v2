@@ -77,10 +77,34 @@ interface UploadStatus {
 
 /**
  * Upload video (async mode - returns immediately)
+ *
+ * material_tag 默认 "INTERNAL"。Batch 1 设计原意是让用户在 UI 强制选择
+ * "内部自制 / 爆款参考"——这个 UI 入口尚未实现，先用 INTERNAL 兜底。
+ * TODO: 在 UI 加素材分级选择器，用户必须显式勾选才能上传。
  */
-export async function uploadVideo(file: File): Promise<UploadResponse> {
+export interface UploadOptions {
+  materialTag?: "INTERNAL" | "VIRAL_REF";
+  containsConfidential?: boolean;
+  referenceUrl?: string;
+  referenceDimensions?: string[];   // 仅 VIRAL_REF 必填
+}
+
+export async function uploadVideo(
+  file: File,
+  options: UploadOptions = {},
+): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
+  formData.append("material_tag", options.materialTag ?? "INTERNAL");
+  if (options.containsConfidential) {
+    formData.append("contains_confidential", "true");
+  }
+  if (options.referenceUrl) {
+    formData.append("reference_url", options.referenceUrl);
+  }
+  if (options.referenceDimensions && options.referenceDimensions.length > 0) {
+    formData.append("reference_dimensions", options.referenceDimensions.join(","));
+  }
 
   const response = await fetch(`${API_BASE_URL}/api/upload`, {
     method: "POST",
@@ -89,7 +113,13 @@ export async function uploadVideo(file: File): Promise<UploadResponse> {
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: "Upload failed" }));
-    throw new Error(error.detail || "Upload failed");
+    // FastAPI 422 校验错误 detail 是 array, 单字符串错误是 string
+    const message = typeof error.detail === "string"
+      ? error.detail
+      : Array.isArray(error.detail)
+      ? error.detail.map((d: { msg: string; loc: string[] }) => `${d.loc.join(".")}: ${d.msg}`).join("; ")
+      : "Upload failed";
+    throw new Error(message);
   }
 
   return response.json();
