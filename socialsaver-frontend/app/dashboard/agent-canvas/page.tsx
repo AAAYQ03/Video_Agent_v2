@@ -194,8 +194,11 @@ function AgentCanvasPage() {
     checkStatus()
   }, [initialJobId])
 
-  // SSE 连接
-  useAgentSSE(agentStatus !== "not_started" ? jobId : null)
+  // SSE 连接：jobId 存在就订阅
+  // 注意：之前的 (agentStatus !== "not_started" ? jobId : null) 是死锁——
+  // agentStatus 变化的唯一信号是 SSE graph_created 事件，门控让事件
+  // 永远收不到，dialog 永远不消失。改为有 jobId 立即订阅。
+  useAgentSSE(jobId)
 
   // Phase 2.4: 多分支全部完成时自动弹对比视图
   useEffect(() => {
@@ -564,8 +567,11 @@ function AgentCanvasPage() {
             </div>
           )}
 
-          {/* 覆盖层：输入目标（分析完成 + Agent 未启动） */}
-          {hasVideo && analysisReady && agentStatus === "not_started" && !graph?.nodes.some(n => n.status !== "PENDING") && (
+          {/* 覆盖层：输入目标（分析完成 + Agent 未启动）
+              注意：之前有 !graph?.nodes.some(n => n.status !== "PENDING") 条件
+              但 Mode 1 分析完毕会把 4 个上游节点标 SUCCESS，导致此条件永假
+              对话框永远不出现。已移除——只看 agentStatus 即可。 */}
+          {hasVideo && analysisReady && agentStatus === "not_started" && (
             <div className="absolute inset-0 flex items-center justify-center z-10 bg-gray-950/60 backdrop-blur-[2px]">
               <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-[420px] shadow-2xl">
                 <div className="flex items-center gap-2 mb-1">
