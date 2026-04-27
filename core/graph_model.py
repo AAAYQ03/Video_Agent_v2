@@ -307,6 +307,30 @@ class WorkflowGraph:
     def get_nodes_by_branch(self, branch: str) -> List[Node]:
         return [n for n in self.nodes if n.branch == branch]
 
+    def get_branches(self) -> Set[str]:
+        """返回所有分支名集合（含 'main'）。"""
+        return {n.branch for n in self.nodes}
+
+    def get_descendants(self, node_id: str) -> List[Node]:
+        """
+        BFS：返回 node_id 所有下游节点（不含自身）。
+        用于分支创建时确定要深拷贝哪些节点。
+        """
+        visited: Set[str] = set()
+        queue: List[str] = [node_id]
+        descendants: List[Node] = []
+        while queue:
+            current = queue.pop(0)
+            for child_id in self._children.get(current, []):
+                if child_id in visited:
+                    continue
+                visited.add(child_id)
+                child = self._node_map.get(child_id)
+                if child:
+                    descendants.append(child)
+                    queue.append(child_id)
+        return descendants
+
     def get_children(self, node_id: str) -> List[Node]:
         child_ids = self._children.get(node_id, [])
         return [self._node_map[cid] for cid in child_ids if cid in self._node_map]
@@ -738,3 +762,130 @@ class WorkflowGraph:
             edges=edges,
             user_goal=user_goal,
         )
+
+    # ============================================================
+    # 分支管理 (Phase 2.3)
+    # ============================================================
+
+    def create_branch(
+        self,
+        fork_node_id: str,
+        branch_name: str,
+        intent_override: Optional[str] = None,
+    ) -> List["Node"]:
+        """
+        从 fork_node 之后的节点链分叉出独立分支（AB 探索的基础设施）。
+
+        实现：
+          - 深拷贝 fork_node 的所有下游节点（含其子节点的子节点等）
+          - 新节点 ID = "branch_{branch_name}__{original_id}"，状态重置 PENDING
+          - 边的处理：
+              · 内部边（source 和 target 都是 descendants）→ 两端重映射
+              · 跨分支边（source 是上游主路径，target 是 descendants）→ source
+                保持原样、target 重映射，让分支节点能复用上游产物
+          - 应用 intent_override 到分支的 INTENT_INJECTION 节点 config
+
+        与官方 Sessions Fork 的关键区别（计划文档 ADR 强调）：
+          ✅ 这里只做对话/拓扑层隔离
+          ✅ 物理文件系统隔离由 agent_loop._branch_job_dir() 配合
+            jobs/{id}/branches/{branch}/ 目录完成（在调用方处理）
+
+        Args:
+            fork_node_id:    分叉点（最后一个共享的节点）
+            branch_name:     分支名（必须唯一，不能是 "main"）
+            intent_override: 给分支的 INTENT_INJECTION 节点写入新意图
+                             （AB 对比时这就是"另一种方案"的描述）
+
+        Returns:
+            新创建的节点列表
+
+        Raises:
+            ValueError: 分支已存在 / fork_node 不存在 / 没有下游节点 / 分支名非法
+        """
+        import copy
+
+        if branch_name == "main":
+            raise ValueError("分支名 'main' 是保留名，不能用作新分支")
+        if not branch_name or "/" in branch_name or "\\" in branch_name:
+            raise ValueError(
+                f"分支名 '{branch_name}' 非法（不能含路径分隔符且不能为空）"
+            )
+        if branch_name in self.get_branches():
+            raise ValueError(f"分支 '{branch_name}' 已存在")
+
+        fork_node = self.get_node(fork_node_id)
+        if not fork_node:
+            raise ValueError(f"fork_node_id='{fork_node_id}' 不存在于图中")
+
+        descendants = self.get_descendants(fork_node_id)
+        if not descendants:
+            raise ValueError(
+                f"fork_node='{fork_node_id}' 没有下游节点，无可分叉"
+            )
+
+        # ----------------------------------------------------------
+        # 1. 深拷贝节点 + 改 ID + 重置状态
+        # ----------------------------------------------------------
+        descendant_ids = {n.id for n in descendants}
+        id_map: Dict[str, str] = {}    # old_id → new_id
+        new_nodes: List[Node] = []
+        prefix = f"branch_{branch_name}__"
+        # 用分支名 hash 给位置加横向偏移避免 UI 重叠
+        x_offset = 350 + (abs(hash(branch_name)) % 10) * 20
+
+        for orig in descendants:
+            new_id = prefix + orig.id
+            id_map[orig.id] = new_id
+
+            new_node = copy.deepcopy(orig)
+            new_node.id = new_id
+            new_node.branch = branch_name
+            new_node.status = NodeStatus.PENDING
+            new_node.result = {}
+            new_node.started_at = None
+            new_node.completed_at = None
+            new_node.retry_count = 0
+            new_node.position = {
+                "x": orig.position.get("x", 0.0) + x_offset,
+                "y": orig.position.get("y", 0.0),
+            }
+            new_nodes.append(new_node)
+
+        # ----------------------------------------------------------
+        # 2. intent_override 应用到分支首个 INTENT_INJECTION 节点
+        # ----------------------------------------------------------
+        if intent_override:
+            for n in new_nodes:
+                if n.type == NodeType.INTENT_INJECTION:
+                    n.config = {
+                        **n.config,
+                        "intent": intent_override,
+                        "branch_name": branch_name,
+                        "branch_intent_override": True,
+                    }
+                    break  # 默认只有一个 INTENT_INJECTION
+
+        # ----------------------------------------------------------
+        # 3. 边的处理 — 任何 target 是 descendants 的边都要复制
+        # ----------------------------------------------------------
+        new_edges: List[Edge] = []
+        for edge in self.edges:
+            if edge.target not in descendant_ids:
+                continue  # 与本分支无关
+            new_target = id_map[edge.target]
+            new_source = id_map.get(edge.source, edge.source)
+            new_edges.append(Edge(
+                id=prefix + edge.id,
+                source=new_source,
+                target=new_target,
+                condition=edge.condition,
+            ))
+
+        # ----------------------------------------------------------
+        # 4. 拼进图，重建索引
+        # ----------------------------------------------------------
+        self.nodes.extend(new_nodes)
+        self.edges.extend(new_edges)
+        self._rebuild_index()
+
+        return new_nodes

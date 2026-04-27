@@ -259,10 +259,13 @@ async def agent_loop(
         # ----------------------------------------------------------
         # 并行执行所有可执行节点
         # ----------------------------------------------------------
+        # Phase 2.3: 节点 job_dir 按 branch 路由——main 节点读写主目录，
+        # 分支节点读写 jobs/{id}/branches/{name}/，物理隔离
         tasks = []
         for node in executable:
+            node_job_dir = _branch_job_dir(project_root, job_id, node.branch)
             tasks.append(_execute_and_update(
-                node, graph, job_id, job_dir, project_root,
+                node, graph, job_id, node_job_dir, project_root,
                 user_goal, event_bus, logger, state,
             ))
 
@@ -310,7 +313,7 @@ async def _execute_and_update(
     node: Node,
     graph: WorkflowGraph,
     job_id: str,
-    job_dir: Path,
+    node_job_dir: Path,
     project_root: Path,
     user_goal: str,
     event_bus: EventBus,
@@ -320,27 +323,31 @@ async def _execute_and_update(
     """
     执行单个节点并更新状态
 
-    在 asyncio executor 中运行同步的 execute_node()，
-    避免阻塞事件循环。
+    Phase 2.3：参数从 job_dir 重命名为 node_job_dir——分支节点的 ExecutionContext
+    指向 jobs/{id}/branches/{name}/，但 GLOBAL graph 状态始终持久化到主目录。
     """
+    # GLOBAL 图状态始终写主目录（不分分支），分支节点的 result 在内存里就够
+    main_job_dir = project_root / "jobs" / job_id
+
     # 标记 RUNNING
     node.mark_running()
-    graph.save(job_dir)
+    graph.save(main_job_dir)
 
     await _emit(event_bus, logger, job_id, "node_started", {
         "nodeId": node.id,
         "nodeType": node.type.value,
         "label": node.label,
+        "branch": node.branch,
     })
 
-    # 构造执行上下文
+    # 构造执行上下文（用 branch 路由后的目录读写产物）
     ctx = ExecutionContext(
         job_id=job_id,
-        job_dir=job_dir,
+        job_dir=node_job_dir,
         node=node,
         project_root=project_root,
         user_goal=user_goal,
-        video_path=job_dir / "input.mp4",
+        video_path=node_job_dir / "input.mp4",
     )
 
     # 在线程池中执行（避免阻塞 event loop）
@@ -423,6 +430,22 @@ async def _wait_for_any_gate(state: AgentState, graph: WorkflowGraph):
 async def _wait_event(event: asyncio.Event):
     """包装 event.wait() 为可取消的 task"""
     await event.wait()
+
+
+def _branch_job_dir(project_root: Path, job_id: str, branch: str) -> Path:
+    """
+    根据节点所属分支计算其执行时应读写的目录。
+
+    - main 分支：jobs/{job_id}/                  （与 Mode 1 兼容）
+    - 其他分支：jobs/{job_id}/branches/{name}/   （物理隔离）
+
+    Phase 2.3 引入。让分支节点的 ExecutionContext.job_dir 自动指向
+    独立目录，分支间产物互不覆盖。
+    """
+    base = project_root / "jobs" / job_id
+    if branch == "main":
+        return base
+    return base / "branches" / branch
 
 
 async def _build_initial_graph(

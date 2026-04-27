@@ -5087,6 +5087,12 @@ class AgentGateApproveRequest(BaseModel):
     node_id: str
 
 
+class AgentForkBranchRequest(BaseModel):
+    fork_node_id: str
+    branch_name: str
+    intent_override: Optional[str] = None
+
+
 class AgentChatV2Request(BaseModel):
     message: str
 
@@ -5201,6 +5207,88 @@ async def approve_agent_gate(job_id: str, req: AgentGateApproveRequest):
         raise HTTPException(status_code=400, detail=f"Node {req.node_id} is not waiting for approval")
     state.approve_gate(req.node_id)
     return {"status": "approved", "nodeId": req.node_id}
+
+
+@app.post("/api/job/{job_id}/agent/fork-branch")
+async def fork_agent_branch(
+    job_id: str, req: AgentForkBranchRequest, request: Request
+):
+    """
+    Phase 2.3：从 fork_node 之后分叉出新分支用于 AB 探索。
+
+    作用：
+      - 深拷贝 fork_node 下游节点链 + 应用 intent_override
+      - 创建分支独立目录 jobs/{id}/branches/{name}/
+      - 深拷贝 film_ir.json + agent_context.json 进分支目录
+      - 持久化更新后的图
+
+    分支节点会被 agent_loop 调度并行执行（与主分支同时跑）。
+    """
+    job_dir = Path("jobs") / job_id
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    graph = WorkflowGraph.load(job_dir)
+    if not graph:
+        raise HTTPException(status_code=400, detail="No agent graph found for this job")
+
+    try:
+        new_nodes = graph.create_branch(
+            fork_node_id=req.fork_node_id,
+            branch_name=req.branch_name,
+            intent_override=req.intent_override,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # 创建分支独立目录 + 深拷贝关键状态文件（"双层隔离"中的物理层）
+    branch_dir = job_dir / "branches" / req.branch_name
+    branch_dir.mkdir(parents=True, exist_ok=True)
+
+    for fname in ("film_ir.json", "agent_context.json", "input.mp4"):
+        src = job_dir / fname
+        if src.exists():
+            try:
+                shutil.copy2(src, branch_dir / fname)
+            except Exception as e:
+                # 拷贝失败不阻断分支创建——记录到审计
+                print(f"⚠️ branch copy {fname} failed: {e}")
+
+    graph.save(job_dir)
+
+    # 审计 + SSE 推送
+    user = getattr(request.state, "user", None)
+    user_email = user.email if user else "system"
+    audit_log().emit(
+        "branch_created",
+        user=user_email,
+        job_id=job_id,
+        resource=f"branch={req.branch_name}",
+        outcome="ok",
+        details={
+            "fork_node_id": req.fork_node_id,
+            "intent_override": req.intent_override,
+            "new_node_count": len(new_nodes),
+        },
+    )
+    await agent_event_bus.emit(
+        job_id,
+        AgentEvent(type="branch_created", data={
+            "branchName": req.branch_name,
+            "forkNodeId": req.fork_node_id,
+            "intentOverride": req.intent_override,
+            "newNodeCount": len(new_nodes),
+            "newNodeIds": [n.id for n in new_nodes],
+        }),
+    )
+
+    return {
+        "status": "branch_created",
+        "branch": req.branch_name,
+        "newNodeCount": len(new_nodes),
+        "newNodeIds": [n.id for n in new_nodes],
+        "branchDir": str(branch_dir.relative_to(Path.cwd()) if branch_dir.is_relative_to(Path.cwd()) else branch_dir),
+    }
 
 
 @app.post("/api/job/{job_id}/agent/pause")
