@@ -31,6 +31,10 @@ from core.graph_model import (
 from core.node_executors import ExecutionContext, execute_node
 from core.event_bus import EventBus, AgentLogger, AgentEvent
 from core.agent_planner import plan_workflow
+from core.agent_evaluator import (
+    is_evaluatable, evaluate_output, decide_retry_strategy, record_retry_attempt,
+    EvaluationResult,
+)
 
 
 # ============================================================
@@ -124,6 +128,7 @@ async def agent_loop(
     user_email: str = "system",
     material_tag: str = "INTERNAL",
     use_planner: bool = True,
+    use_evaluator: bool = True,
 ):
     """
     Agent 核心执行循环
@@ -267,6 +272,9 @@ async def agent_loop(
             tasks.append(_execute_and_update(
                 node, graph, job_id, node_job_dir, project_root,
                 user_goal, event_bus, logger, state,
+                user_email=user_email,
+                material_tag=material_tag,
+                use_evaluator=use_evaluator,
             ))
 
         await asyncio.gather(*tasks)
@@ -319,6 +327,10 @@ async def _execute_and_update(
     event_bus: EventBus,
     logger: AgentLogger,
     state: AgentState,
+    *,
+    user_email: str = "system",
+    material_tag: str = "INTERNAL",
+    use_evaluator: bool = True,
 ):
     """
     执行单个节点并更新状态
@@ -358,6 +370,20 @@ async def _execute_and_update(
     status = result.get("status", "failed")
     if status in ("success", "partial"):
         node.mark_success(result)
+
+        # ===== Phase 3.4 PostExecute 钩子位：评估器 =====
+        # 视觉生成类节点（STORYBOARD / VIDEO_GENERATION 等）走 LLM-as-Judge
+        # 不达标时换策略重试（共享 max_retries 预算，硬熔断防死循环）
+        if use_evaluator and is_evaluatable(node):
+            should_continue = await _evaluate_and_maybe_retry(
+                node=node, graph=graph, result=result,
+                main_job_dir=main_job_dir, job_id=job_id,
+                user_email=user_email, material_tag=material_tag,
+                event_bus=event_bus, logger=logger,
+            )
+            if not should_continue:
+                return  # 已重置或失败，事件已发；不再 emit node_completed
+
         await _emit(event_bus, logger, job_id, "node_completed", {
             "nodeId": node.id,
             "nodeType": node.type.value,
@@ -430,6 +456,93 @@ async def _wait_for_any_gate(state: AgentState, graph: WorkflowGraph):
 async def _wait_event(event: asyncio.Event):
     """包装 event.wait() 为可取消的 task"""
     await event.wait()
+
+
+async def _evaluate_and_maybe_retry(
+    *,
+    node: Node,
+    graph: WorkflowGraph,
+    result: Dict[str, Any],
+    main_job_dir: Path,
+    job_id: str,
+    user_email: str,
+    material_tag: str,
+    event_bus: EventBus,
+    logger: AgentLogger,
+) -> bool:
+    """
+    Phase 3.4 评估钩子。
+
+    返回值：
+      True  → 评估通过（或评估器异常被吞），调用方继续 emit node_completed
+      False → 评估不通过 + 已重置/失败，事件已发，调用方 return 不再发 completed
+    """
+    try:
+        eval_result: EvaluationResult = await asyncio.to_thread(
+            evaluate_output,
+            node, result,
+            user_email=user_email,
+            material_tag=material_tag,
+            job_id=job_id,
+        )
+    except Exception as e:
+        # 评估器自身异常（LLM 接口问题、JSON 重试两次仍失败等）
+        # 不能因为评估器挂了就把节点搞失败——降级：发警告事件，按"通过"放行
+        await _emit(event_bus, logger, job_id, "evaluation_skipped", {
+            "nodeId": node.id,
+            "nodeType": node.type.value,
+            "reason": str(e)[:300],
+        })
+        return True
+
+    # 评估通过 → 继续走 node_completed
+    if eval_result.passed:
+        await _emit(event_bus, logger, job_id, "evaluation_done", {
+            "nodeId": node.id,
+            "nodeType": node.type.value,
+            "scores": dict(eval_result.scores),
+            "weightedScore": eval_result.weighted_score,
+            "passed": True,
+        })
+        return True
+
+    # 评估不通过：决策是重试还是熔断 FAILED
+    strategy = decide_retry_strategy(node, eval_result)
+
+    if node.can_retry():
+        # 还有重试预算 → 应用策略 + 把节点重置回 PENDING 让主循环再调度一次
+        record_retry_attempt(node, eval_result, strategy)
+        node.reset_for_retry()
+        graph.save(main_job_dir)
+
+        await _emit(event_bus, logger, job_id, "quality_issue", {
+            "nodeId": node.id,
+            "nodeType": node.type.value,
+            "scores": dict(eval_result.scores),
+            "issues": list(eval_result.issues),
+            "weightedScore": eval_result.weighted_score,
+            "feedback": eval_result.feedback,
+            "strategyApplied": strategy.name,
+            "attempt": node.retry_count,
+            "maxRetries": node.max_retries,
+        })
+        return False
+
+    # 熔断：重试预算用尽 → 标 FAILED 不再循环
+    node.mark_failed(
+        f"质量评估连续 {node.retry_count} 次未达标; issues={eval_result.issues}"
+    )
+    graph.save(main_job_dir)
+
+    await _emit(event_bus, logger, job_id, "node_failed", {
+        "nodeId": node.id,
+        "nodeType": node.type.value,
+        "label": node.label,
+        "error": f"quality_eval_failed; final_issues={eval_result.issues}",
+        "retryCount": node.retry_count,
+        "finalScores": dict(eval_result.scores),
+    })
+    return False
 
 
 def _branch_job_dir(project_root: Path, job_id: str, branch: str) -> Path:
