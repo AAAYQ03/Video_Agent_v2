@@ -567,7 +567,7 @@ class FilmIRManager:
         print(f"🤖 Calling Gemini API for Story Theme analysis...")
         response = gemini_call_with_retry(
             client=client,
-            model="gemini-3.1-pro-preview",
+            model="gemini-2.5-pro",
             contents=[prompt, uploaded_file],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -600,7 +600,7 @@ class FilmIRManager:
         print(f"🤖 Calling Gemini API for Narrative extraction...")
         response = gemini_call_with_retry(
             client=client,
-            model="gemini-3.1-pro-preview",
+            model="gemini-2.5-pro",
             contents=[prompt, uploaded_file],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -642,7 +642,7 @@ class FilmIRManager:
 
         response = gemini_call_with_retry(
             client=client,
-            model="gemini-3.1-pro-preview",
+            model="gemini-2.5-pro",
             contents=[phase1_prompt, uploaded_file],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -840,7 +840,7 @@ class FilmIRManager:
 
                 response = gemini_call_with_retry(
                     client=client,
-                    model="gemini-3.1-pro-preview",
+                    model="gemini-2.5-pro",
                     contents=[batch_prompt, uploaded_file],
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json"
@@ -933,7 +933,7 @@ class FilmIRManager:
             time.sleep(2)
             response = gemini_call_with_retry(
                 client=client,
-                model="gemini-3.1-pro-preview",
+                model="gemini-2.5-pro",
                 contents=[split_prompt, uploaded_file],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json"
@@ -1008,7 +1008,7 @@ class FilmIRManager:
 
         discovery_response = gemini_call_with_retry(
             client=client,
-            model="gemini-3.1-pro-preview",
+            model="gemini-2.5-pro",
             contents=discovery_contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1061,7 +1061,7 @@ class FilmIRManager:
         # Single API call for all characters × all shots
         audit_response = gemini_call_with_retry(
             client=client,
-            model="gemini-3.1-pro-preview",
+            model="gemini-2.5-pro",
             contents=audit_contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1139,7 +1139,7 @@ class FilmIRManager:
 
         env_response = gemini_call_with_retry(
             client=client,
-            model="gemini-3.1-pro-preview",
+            model="gemini-2.5-pro",
             contents=[env_prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1226,7 +1226,7 @@ class FilmIRManager:
 
                 recheck_response = gemini_call_with_retry(
                     client=client,
-                    model="gemini-3.1-pro-preview",
+                    model="gemini-2.5-pro",
                     contents=recheck_contents,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
@@ -1759,7 +1759,7 @@ class FilmIRManager:
         # 调用 Gemini API
         print(f"🤖 Calling Gemini API for intent parsing...")
         response = client.models.generate_content(
-            model="gemini-3.1-pro-preview",
+            model="gemini-2.5-pro",
             contents=[prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -1868,7 +1868,7 @@ class FilmIRManager:
         # 调用 Gemini API
         print(f"🤖 Calling Gemini API for intent fusion...")
         response = client.models.generate_content(
-            model="gemini-3.1-pro-preview",
+            model="gemini-2.5-pro",
             contents=[prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -2113,7 +2113,7 @@ Output ONLY valid JSON. No markdown, no explanation.
 """
 
         response = client.models.generate_content(
-            model="gemini-3.1-pro-preview",
+            model="gemini-2.5-pro",
             contents=[prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -2220,7 +2220,7 @@ Output ONLY valid JSON array. No markdown.
 """
 
         response = client.models.generate_content(
-            model="gemini-3.1-pro-preview",
+            model="gemini-2.5-pro",
             contents=[prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"

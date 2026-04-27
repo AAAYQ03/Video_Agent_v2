@@ -13,7 +13,7 @@ class AgentEngine:
         from .utils import gemini_keys
         api_key = gemini_keys.get()
         self.client = gateway_client(task="agent_intent_parse", api_key=api_key)
-        self.model_id = "gemini-3.1-pro-preview"
+        self.model_id = "gemini-2.5-pro"
 
     def get_action_from_text(self, user_input: str, workflow_summary: str) -> Union[Dict, List]:
         system_prompt = f"""

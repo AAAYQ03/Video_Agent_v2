@@ -455,7 +455,7 @@ class WorkflowManager:
         uploaded = client.files.upload(file=str(video_path))
         video_file = wait_until_file_active(client, uploaded)
         response = client.models.generate_content(
-            model="gemini-3.1-pro-preview",
+            model="gemini-2.5-pro",
             contents=[DIRECTOR_METAPROMPT, video_file],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -507,7 +507,7 @@ class WorkflowManager:
 
         try:
             merge_response = client.models.generate_content(
-                model="gemini-3.1-pro-preview",
+                model="gemini-2.5-pro",
                 contents=[merge_prompt],
             )
             merge_text = merge_response.text.strip()

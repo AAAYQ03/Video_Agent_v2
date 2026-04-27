@@ -2680,7 +2680,7 @@ Return ONLY the JSON object, no other text."""
 
     try:
         response = client.models.generate_content(
-            model="gemini-3.1-pro-preview",
+            model="gemini-2.5-pro",
             contents=[parse_prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -2746,7 +2746,7 @@ Generate an updated cinematic prompt that incorporates the requested changes whi
 Return ONLY the new prompt text, no other explanation."""
 
                     regen_response = client.models.generate_content(
-                        model="gemini-3.1-pro-preview",
+                        model="gemini-2.5-pro",
                         contents=[regen_prompt]
                     )
                     new_prompt = regen_response.text.strip()
@@ -3547,7 +3547,7 @@ async def upload_entity_view(job_id: str, anchor_id: str, view: str, file: Uploa
             )
 
         response = client.models.generate_content(
-            model="gemini-3.1-pro-preview",
+            model="gemini-2.5-pro",
             contents=[
                 vision_prompt,
                 genai_types.Part.from_bytes(data=img_bytes, mime_type="image/png")
@@ -4901,7 +4901,7 @@ async def retry_shot_analysis(job_id: str, request: RetryBatchRequest = None):
         try:
             import json
             response = client.models.generate_content(
-                model="gemini-3.1-pro-preview",
+                model="gemini-2.5-pro",
                 contents=[batch_prompt, uploaded_file],
                 config=genai_types.GenerateContentConfig(
                     response_mime_type="application/json"
