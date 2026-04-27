@@ -5,18 +5,19 @@ Agent Loop
 Agent Workflow Canvas (Mode 2) 的核心执行循环。
 
 职责：
-1. 接收用户目标 → 创建默认 DAG
+1. 接收用户目标 → 通过 LLM 规划器（agent_planner）生成 DAG
 2. 按拓扑顺序驱动节点执行（支持并行）
 3. 处理 Gate 暂停/恢复
 4. 失败自动重试
 5. 通过 EventBus 实时推送状态
 6. 持久化 graph + 日志
 
-Phase 0 简化：
-- 不调 LLM 规划 DAG（使用 create_default 硬编码模板）
-- Gate 逻辑已实现（但可通过 skip_gates=True 跳过）
-- 不做自评估（Phase 3 加入）
-- 不处理分支（Phase 2 加入）
+Phase 进度：
+✅ Phase 0/1: 状态机 + Gate + 事件总线 + 前端画布
+✅ Phase 1.5: LLM 规划器接入（plan_workflow）；规划失败时 fall back
+              到 create_default 硬编码模板 + 发警告事件
+⏳ Phase 2:   分支隔离（branch + 文件系统）
+⏳ Phase 3:   自评估器 + 自动重试策略
 """
 
 import asyncio
@@ -29,6 +30,7 @@ from core.graph_model import (
 )
 from core.node_executors import ExecutionContext, execute_node
 from core.event_bus import EventBus, AgentLogger, AgentEvent
+from core.agent_planner import plan_workflow
 
 
 # ============================================================
@@ -119,18 +121,25 @@ async def agent_loop(
     project_root: Path = None,
     graph: WorkflowGraph = None,
     skip_gates: bool = False,
+    user_email: str = "system",
+    material_tag: str = "INTERNAL",
+    use_planner: bool = True,
 ):
     """
     Agent 核心执行循环
 
     Args:
-        job_id: 作业 ID
-        user_goal: 用户目标（自然语言）
-        event_bus: 事件总线（SSE 推送）
-        logger: JSONL 日志器
-        project_root: 项目根目录
-        graph: 可选的已有 DAG（用于崩溃恢复）
-        skip_gates: 是否跳过所有 Gate（纯自动模式）
+        job_id:        作业 ID
+        user_goal:     用户目标（自然语言）
+        event_bus:     事件总线（SSE 推送）
+        logger:        JSONL 日志器
+        project_root:  项目根目录
+        graph:         可选的已有 DAG（用于崩溃恢复）
+        skip_gates:    是否跳过所有 Gate（纯自动模式）
+        user_email:    触发用户（审计追踪 + 网关脱敏决策）
+        material_tag:  素材分级（INTERNAL / VIRAL_REF），默认 INTERNAL
+        use_planner:   True 走 LLM 规划器；False 直接 fall back 到默认 DAG
+                       （测试或紧急情况用）
     """
     project_root = project_root or Path(__file__).parent.parent
     job_dir = project_root / "jobs" / job_id
@@ -143,18 +152,29 @@ async def agent_loop(
         graph = WorkflowGraph.load(job_dir)
 
     if graph is None:
-        # 创建默认 DAG
-        graph = WorkflowGraph.create_default(
+        graph = await _build_initial_graph(
             user_goal=user_goal,
-            intent_config={"intent": user_goal},
+            user_email=user_email,
+            material_tag=material_tag,
+            job_id=job_id,
+            use_planner=use_planner,
+            event_bus=event_bus,
+            logger=logger,
         )
         graph.status = "RUNNING"
         graph.save(job_dir)
+
+        # 计算"复用"和"待跑"节点数（Phase 1.5 的核心可见性指标）
+        reuse_count = sum(1 for n in graph.nodes if n.status == NodeStatus.SUCCESS)
+        pending_count = sum(1 for n in graph.nodes if n.status == NodeStatus.PENDING)
 
         await _emit(event_bus, logger, job_id, "graph_created", {
             "nodeCount": len(graph.nodes),
             "edgeCount": len(graph.edges),
             "userGoal": user_goal,
+            "plannerUsed": use_planner,
+            "reusedCount": reuse_count,
+            "pendingCount": pending_count,
         })
     else:
         # 恢复：将所有 RUNNING 节点重置为 PENDING
@@ -403,6 +423,56 @@ async def _wait_for_any_gate(state: AgentState, graph: WorkflowGraph):
 async def _wait_event(event: asyncio.Event):
     """包装 event.wait() 为可取消的 task"""
     await event.wait()
+
+
+async def _build_initial_graph(
+    *,
+    user_goal: str,
+    user_email: str,
+    material_tag: str,
+    job_id: str,
+    use_planner: bool,
+    event_bus: EventBus,
+    logger: AgentLogger,
+) -> WorkflowGraph:
+    """
+    构造首次启动时的 DAG。
+
+    优先走 LLM 规划器（Phase 1.5）；规划失败时 fall back 到 create_default
+    硬编码模板，并发 planner_failed 事件让前端可见。
+
+    plan_workflow 是同步函数（调 Gemini），用 asyncio.to_thread 包以免阻塞
+    event loop。
+    """
+    if not use_planner:
+        return WorkflowGraph.create_default(
+            user_goal=user_goal,
+            intent_config={"intent": user_goal},
+        )
+
+    try:
+        graph = await asyncio.to_thread(
+            plan_workflow,
+            user_goal,
+            user_email=user_email,
+            material_tag=material_tag,
+            job_id=job_id,
+        )
+        await _emit(event_bus, logger, job_id, "planner_succeeded", {
+            "userGoal": user_goal,
+        })
+        return graph
+    except Exception as e:
+        # 规划失败不应阻塞 agent 启动——fall back 到默认模板，让用户至少能跑
+        await _emit(event_bus, logger, job_id, "planner_failed", {
+            "userGoal": user_goal,
+            "error": str(e)[:300],
+            "fallback": "create_default",
+        })
+        return WorkflowGraph.create_default(
+            user_goal=user_goal,
+            intent_config={"intent": user_goal},
+        )
 
 
 async def _emit(

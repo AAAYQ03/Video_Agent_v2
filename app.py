@@ -5096,11 +5096,17 @@ _agent_tasks: Dict[str, Any] = {}
 
 
 @app.post("/api/job/{job_id}/agent/start")
-async def start_agent(job_id: str, req: AgentStartRequest, background_tasks: BackgroundTasks):
+async def start_agent(
+    job_id: str,
+    req: AgentStartRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
     """
     启动 Agent 自动模式
 
-    创建默认 DAG 并开始执行。通过 SSE (/agent/stream) 实时推送进度。
+    创建 DAG（走 LLM 规划器，失败兜底默认模板）并开始执行。
+    通过 SSE (/agent/stream) 实时推送进度。
     """
     job_dir = Path("jobs") / job_id
     if not job_dir.exists():
@@ -5109,6 +5115,20 @@ async def start_agent(job_id: str, req: AgentStartRequest, background_tasks: Bac
     # 检查是否已在运行
     if job_id in _agent_tasks and _agent_tasks[job_id].get("status") == "running":
         return {"status": "already_running", "jobId": job_id}
+
+    # 从 request.state.user 取触发用户（auth middleware 已注入）
+    user = getattr(request.state, "user", None)
+    user_email = user.email if user else "system"
+
+    # 从 jobs/{id}/material_metadata.json 读 material_tag（Batch 1 落地）
+    material_tag = "INTERNAL"
+    meta_path = job_dir / "material_metadata.json"
+    if meta_path.exists():
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                material_tag = json.load(f).get("tag", "INTERNAL")
+        except Exception:
+            pass
 
     _agent_tasks[job_id] = {"status": "running", "goal": req.goal}
 
@@ -5122,6 +5142,8 @@ async def start_agent(job_id: str, req: AgentStartRequest, background_tasks: Bac
                 event_bus=agent_event_bus,
                 logger=agent_logger,
                 skip_gates=req.skip_gates,
+                user_email=user_email,
+                material_tag=material_tag,
             )
             _agent_tasks[job_id]["status"] = "completed"
         except Exception as e:
@@ -5135,6 +5157,8 @@ async def start_agent(job_id: str, req: AgentStartRequest, background_tasks: Bac
         "status": "started",
         "jobId": job_id,
         "goal": req.goal,
+        "user": user_email,
+        "materialTag": material_tag,
         "message": "Agent started. Connect to /agent/stream for realtime updates.",
     }
 
