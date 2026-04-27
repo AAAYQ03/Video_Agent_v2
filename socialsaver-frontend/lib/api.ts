@@ -93,6 +93,44 @@ export interface UploadOptions {
   referenceDimensions?: string[];   // 仅 VIRAL_REF 必填
 }
 
+/**
+ * Fork a branch from an existing fork point (Phase 2.3 后端 / 2.4 前端入口)
+ */
+export interface ForkBranchOptions {
+  forkNodeId: string
+  branchName: string
+  intentOverride?: string
+}
+
+export interface ForkBranchResponse {
+  status: string
+  branch: string
+  newNodeCount: number
+  newNodeIds: string[]
+  branchDir?: string
+}
+
+export async function forkBranch(
+  jobId: string,
+  options: ForkBranchOptions,
+): Promise<ForkBranchResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/job/${jobId}/agent/fork-branch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      fork_node_id: options.forkNodeId,
+      branch_name: options.branchName,
+      intent_override: options.intentOverride,
+    }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(typeof err.detail === "string" ? err.detail : "Failed to fork branch")
+  }
+  return res.json()
+}
+
+
 export async function uploadVideo(
   file: File,
   options: UploadOptions = {},

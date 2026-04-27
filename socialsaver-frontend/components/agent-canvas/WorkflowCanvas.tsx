@@ -73,6 +73,7 @@ function toReactFlowNodes(
         result: node.result,
         retryCount: node.retryCount,
         config: node.config,
+        branch: node.branch,
         expandable: isExpandable,
         expanded: isExpanded,
       },

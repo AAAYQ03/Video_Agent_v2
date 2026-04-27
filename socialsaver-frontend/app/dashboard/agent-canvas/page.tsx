@@ -10,6 +10,7 @@ import { ReactFlowProvider } from "@xyflow/react"
 import { WorkflowCanvas } from "@/components/agent-canvas/WorkflowCanvas"
 import { AgentChat } from "@/components/agent-canvas/AgentChat"
 import { NodeDetail } from "@/components/agent-canvas/NodeDetail"
+import { BranchCompare } from "@/components/agent-canvas/BranchCompare"
 import { useAgentSSE } from "@/hooks/use-agent-sse"
 import { useAgentStore, type AgentGraph } from "@/stores/agentStore"
 import { uploadVideo, getUploadStatus } from "@/lib/api"
@@ -17,7 +18,7 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import {
   ArrowLeft, Play, Pause, Square, Wifi, WifiOff,
-  Loader2, Upload, CheckCircle2, Film,
+  Loader2, Upload, CheckCircle2, Film, GitBranch,
 } from "lucide-react"
 import Link from "next/link"
 
@@ -108,6 +109,10 @@ function AgentCanvasPage() {
   const [dragActive, setDragActive] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Phase 2.4：分支对比视图状态
+  const [compareOpen, setCompareOpen] = useState(false)
+  const [autoOpenedCompare, setAutoOpenedCompare] = useState(false)
+
   // 素材分级（Batch 1 设计原意：让用户显式选择，责任前置）
   const [materialTag, setMaterialTag] = useState<"INTERNAL" | "VIRAL_REF">("INTERNAL")
   const [containsConfidential, setContainsConfidential] = useState(false)
@@ -191,6 +196,21 @@ function AgentCanvasPage() {
 
   // SSE 连接
   useAgentSSE(agentStatus !== "not_started" ? jobId : null)
+
+  // Phase 2.4: 多分支全部完成时自动弹对比视图
+  useEffect(() => {
+    if (!graph) return
+    const branches = Array.from(new Set(graph.nodes.map(n => n.branch || "main")))
+    if (branches.length < 2) return
+    const allOutputsDone = branches.every(b => {
+      const out = graph.nodes.find(n => n.type === "OUTPUT" && n.branch === b)
+      return out?.status === "SUCCESS"
+    })
+    if (allOutputsDone && !autoOpenedCompare) {
+      setCompareOpen(true)
+      setAutoOpenedCompare(true)
+    }
+  }, [graph, autoOpenedCompare])
 
   // 轮询分析状态
   const pollAnalysisStatus = useCallback((jid: string) => {
@@ -334,6 +354,22 @@ function AgentCanvasPage() {
               {analysisStatus}
             </div>
           )}
+          {/* Phase 2.4：多分支时显示对比视图按钮 */}
+          {graph && (() => {
+            const branches = Array.from(new Set(graph.nodes.map(n => n.branch || "main")))
+            return branches.length >= 2 ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setCompareOpen(true)}
+                className="h-7 text-xs border-amber-500/40 text-amber-300 hover:bg-amber-500/10"
+              >
+                <GitBranch className="w-3.5 h-3.5 mr-1" />
+                对比 {branches.length} 个分支
+              </Button>
+            ) : null
+          })()}
+
           {hasVideo && analysisReady && agentStatus === "not_started" && (
             <div className="flex items-center gap-1.5 text-xs text-green-400">
               <CheckCircle2 className="w-3.5 h-3.5" />
@@ -572,6 +608,10 @@ function AgentCanvasPage() {
           {selectedNodeId ? <NodeDetail /> : <AgentChat />}
         </div>
       </div>
+
+      {/* Phase 2.4：分支对比视图（多分支全部 OUTPUT SUCCESS 时自动弹出，
+          也可通过顶栏「对比 N 个分支」按钮手动打开） */}
+      <BranchCompare open={compareOpen} onClose={() => setCompareOpen(false)} />
     </div>
   )
 }

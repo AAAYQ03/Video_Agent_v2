@@ -297,6 +297,34 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       case "workflow_stopped":
         setAgentStatus("stopped")
         break
+
+      // Phase 1.5
+      case "planner_succeeded":
+        addChatMessage({
+          id: `msg_${Date.now()}`,
+          role: "agent",
+          content: "✓ LLM 规划器已生成最小 DAG",
+          timestamp: event.ts,
+        })
+        break
+      case "planner_failed":
+        addChatMessage({
+          id: `msg_${Date.now()}`,
+          role: "agent",
+          content: `⚠ 规划失败回退到默认模板: ${event.data.error || ""}`,
+          timestamp: event.ts,
+        })
+        break
+
+      // Phase 2.3
+      case "branch_created":
+        addChatMessage({
+          id: `msg_${Date.now()}`,
+          role: "agent",
+          content: `🌿 分支 "${event.data.branchName}" 已创建（${event.data.newNodeCount} 个节点）`,
+          timestamp: event.ts,
+        })
+        break
     }
   },
 

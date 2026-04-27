@@ -99,17 +99,37 @@ interface WorkflowNodeData {
   result: Record<string, unknown>
   retryCount: number
   config: Record<string, unknown>
+  branch?: string
   expandable?: boolean
   expanded?: boolean
 }
 
+// 分支配色：稳定哈希 → 5 个预设之一（main 单独配色）
+const BRANCH_PALETTE = [
+  { name: "amber",  badge: "bg-amber-500/20 text-amber-300 border-amber-500/40" },
+  { name: "purple", badge: "bg-purple-500/20 text-purple-300 border-purple-500/40" },
+  { name: "cyan",   badge: "bg-cyan-500/20 text-cyan-300 border-cyan-500/40" },
+  { name: "rose",   badge: "bg-rose-500/20 text-rose-300 border-rose-500/40" },
+  { name: "lime",   badge: "bg-lime-500/20 text-lime-300 border-lime-500/40" },
+]
+function _hashStr(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0
+  return Math.abs(h)
+}
+function getBranchBadgeClass(branch: string): string {
+  if (!branch || branch === "main") return ""
+  return BRANCH_PALETTE[_hashStr(branch) % BRANCH_PALETTE.length].badge
+}
+
 function WorkflowNodeInner({ data }: NodeProps) {
   const nodeData = data as unknown as WorkflowNodeData
-  const { label, nodeType, status, gate, result, retryCount, expandable, expanded } = nodeData
+  const { label, nodeType, status, gate, result, retryCount, branch, expandable, expanded } = nodeData
 
   const style = STATUS_STYLES[status] || STATUS_STYLES.PENDING
   const NodeIcon = NODE_ICONS[nodeType] || CheckCircle2
   const StatusIcon = style.icon
+  const branchBadgeClass = getBranchBadgeClass(branch || "main")
 
   // 耗时显示
   const durationMs = result?.duration_ms as number | undefined
@@ -122,7 +142,7 @@ function WorkflowNodeInner({ data }: NodeProps) {
   return (
     <div
       className={`
-        px-4 py-3 rounded-lg border-2 min-w-[180px] max-w-[220px]
+        relative px-4 py-3 rounded-lg border-2 min-w-[180px] max-w-[220px]
         shadow-lg cursor-pointer transition-all hover:shadow-xl
         ${style.bg} ${style.border}
       `}
@@ -133,6 +153,15 @@ function WorkflowNodeInner({ data }: NodeProps) {
         position={Position.Top}
         className="!w-2.5 !h-2.5 !bg-gray-500 !border-gray-400"
       />
+
+      {/* 分支标签（仅非 main 显示） */}
+      {branch && branch !== "main" && (
+        <div className="absolute -top-2 -right-2 z-10">
+          <span className={`inline-block text-[10px] px-1.5 py-0.5 rounded border ${branchBadgeClass}`}>
+            🌿 {branch}
+          </span>
+        </div>
+      )}
 
       {/* 节点内容 */}
       <div className="flex items-center gap-2.5">

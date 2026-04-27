@@ -55,6 +55,10 @@ export function useAgentSSE(jobId: string | null) {
       "workflow_resumed", "workflow_stopped",
       "agent_message", "graph_updated",
       "quality_issue",
+      // Phase 1.5: 规划器
+      "planner_succeeded", "planner_failed",
+      // Phase 2.3: 分支
+      "branch_created",
     ]
 
     for (const eventType of eventTypes) {
@@ -63,8 +67,8 @@ export function useAgentSSE(jobId: string | null) {
           const parsed = JSON.parse(e.data)
           handleSSEEvent(parsed)
 
-          // graph 结构变化时重新拉取
-          if (["graph_created", "graph_resumed", "graph_updated"].includes(eventType)) {
+          // graph 结构变化时重新拉取（分支创建会改图结构）
+          if (["graph_created", "graph_resumed", "graph_updated", "branch_created"].includes(eventType)) {
             fetchGraph()
           }
         } catch {
