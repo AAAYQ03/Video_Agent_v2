@@ -7,6 +7,31 @@
 
 ## 未完成工作
 
+### 🐛 P0 BUG（明天第一件事）：意图注入实际未生效
+
+**症状**：`jobs/job_eb99d7a4/film_ir.json` 里 `userIntent` 所有字段都是 null
+（rawPrompt / parsedIntent / remixedLayer 都是 null），但 INTENT_INJECTION
+节点显示绿色 SUCCESS。说明执行器**显示成功但实际没融合用户意图**——下游
+STORYBOARD 用的是原视频分析数据，不是被改写的版本。
+
+**怀疑路径**：
+1. `_execute_intent_injection` 调 `ir_manager.run_stage("intentInjection")`
+   内部撞 503 但被 catch 掉，没真跑 intent_parse + intent_fusion
+2. Mode 1 后台 ANALYZE 任务和 Mode 2 agent_loop 并发写 film_ir.json，
+   覆盖了刚写的 rawPrompt（写竞态）
+3. plan_workflow → build_minimal_dag → create_default 链路某处把 intent
+   传丢了（node.config["intent"] 实际是空）
+
+**调试步骤**：
+1. 在 `core/node_executors.py:_execute_intent_injection` 加 print 打印 intent 值
+2. 手动跑：`python3 -c "from core.film_ir_manager import FilmIRManager;
+   m = FilmIRManager('job_xxx'); m.run_stage('intentInjection')"` 看单独能否工作
+3. 检查 `core/film_ir_manager.py:run_stage("intentInjection")` 内部异常处理
+
+---
+
+
+
 ### 已完成 Batch 2 ✅：12 个 Gemini 直调点已全部迁移到 `gateway_client()`
 
 迁移采用**透明代理**模式（`core/safety/llm_gateway.py:GatewayClient`）——
